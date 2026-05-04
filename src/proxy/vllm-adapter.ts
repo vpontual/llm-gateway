@@ -141,6 +141,17 @@ function mergeStreamOptions(parsed: Record<string, unknown>, target: Record<stri
   target.stream_options = { ...existing, include_usage: true };
 }
 
+/**
+ * Qwen3-family models support a `chat_template_kwargs.enable_thinking` flag that
+ * toggles the model between Thinking and Instruct (non-thinking) modes via the
+ * tokenizer's chat template. Other vLLM-served models don't recognize it (Jinja
+ * templates ignore unknown kwargs), but we still gate on Qwen3 to be safe.
+ */
+function isQwen3Model(model: unknown): boolean {
+  if (typeof model !== "string") return false;
+  return /qwen3/i.test(model);
+}
+
 function adaptChat(parsed: Record<string, unknown>): AdaptedRequest {
   const body: Record<string, unknown> = {
     model: parsed.model,
@@ -152,6 +163,13 @@ function adaptChat(parsed: Record<string, unknown>): AdaptedRequest {
   mapOptionsToVllm(parsed.options as Record<string, unknown> | undefined, body);
   applyOllamaFormat(parsed, body);
   if (parsed.stream !== false) mergeStreamOptions(parsed, body);
+  // Translate Ollama-shape `think: false` → vLLM `chat_template_kwargs.enable_thinking=false`
+  // for Qwen3 models. Without this, `think: false` is silently dropped and the
+  // model thinks regardless. `think: true` is the model's default — no kwargs needed.
+  if (parsed.think === false && isQwen3Model(parsed.model)) {
+    const existing = (body.chat_template_kwargs as Record<string, unknown> | undefined) ?? {};
+    body.chat_template_kwargs = { ...existing, enable_thinking: false };
+  }
   return { path: "/v1/chat/completions", body: Buffer.from(JSON.stringify(body)) };
 }
 
