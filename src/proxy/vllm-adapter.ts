@@ -60,14 +60,28 @@ function mapOptionsToVllm(
   }
 }
 
-/** Convert Ollama historical messages to OpenAI shape (tool_call args stringified). */
+/** Convert Ollama historical messages to OpenAI shape (tool_call args stringified).
+ *
+ * Critical: synthesizes `tool_call_id` for tool-role messages that are missing
+ * it. The Ollama API threads tool results to calls implicitly (by message
+ * order), but OpenAI requires an explicit `tool_call_id`. vLLM with the Qwen3
+ * chat template rejects requests where tool messages can't be linked back —
+ * the user-visible failure is "No user query found in messages." (HTTP 400).
+ *
+ * We track the last assistant's tool_call IDs and assign them to subsequent
+ * tool-role messages by positional order. If a client already provides a
+ * tool_call_id, we honor it.
+ */
 function messagesOllamaToVllm(messages: unknown[]): unknown[] {
-  return messages.map((m) => {
+  let lastToolCallIds: string[] = [];
+  let toolCursor = 0;
+  return messages.map((m, msgIdx) => {
     if (!m || typeof m !== "object") return m;
     const src = m as Record<string, unknown>;
     const out: Record<string, unknown> = { role: src.role };
     if (src.content !== undefined) out.content = src.content;
     if (Array.isArray(src.tool_calls)) {
+      const synthesized: string[] = [];
       out.tool_calls = src.tool_calls.map((tcRaw, i: number) => {
         const tc = (tcRaw ?? {}) as Record<string, unknown>;
         const fn = (tc.function ?? {}) as Record<string, unknown>;
@@ -75,15 +89,32 @@ function messagesOllamaToVllm(messages: unknown[]): unknown[] {
           typeof fn.arguments === "string"
             ? (fn.arguments as string)
             : JSON.stringify(fn.arguments ?? {});
+        // Stable, request-scoped id — pairs with tool_call_id below.
+        const id = (tc.id as string | undefined) ?? `call_${msgIdx}_${i}`;
+        synthesized.push(id);
         return {
-          id: (tc.id as string | undefined) ?? `call_${i}`,
+          id,
           type: "function",
           function: { name: fn.name, arguments: args },
         };
       });
+      // Reset tool-result cursor so subsequent tool messages can claim these.
+      lastToolCallIds = synthesized;
+      toolCursor = 0;
     }
-    if (src.tool_call_id !== undefined) out.tool_call_id = src.tool_call_id;
-    if (src.role === "tool" && src.name !== undefined) out.name = src.name;
+    if (src.role === "tool") {
+      // Honor a client-provided tool_call_id; otherwise synthesize from the
+      // most recent assistant's tool_calls by positional order.
+      if (src.tool_call_id !== undefined) {
+        out.tool_call_id = src.tool_call_id;
+      } else if (toolCursor < lastToolCallIds.length) {
+        out.tool_call_id = lastToolCallIds[toolCursor];
+      }
+      toolCursor += 1;
+      if (src.name !== undefined) out.name = src.name;
+    } else if (src.tool_call_id !== undefined) {
+      out.tool_call_id = src.tool_call_id;
+    }
     return out;
   });
 }
