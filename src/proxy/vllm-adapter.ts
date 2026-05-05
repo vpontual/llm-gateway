@@ -394,9 +394,20 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
             function: {
               name: t.name ?? "",
               arguments: (() => {
+                const raw = t.args || "";
                 try {
-                  return JSON.parse(t.args || "{}");
-                } catch {
+                  return JSON.parse(raw || "{}");
+                } catch (parseErr) {
+                  // Diagnostic: vLLM tool-call parsers (e.g. qwen3_xml) occasionally
+                  // emit malformed JSON for tool arguments — most often when the
+                  // model interleaves reasoning and the parser drops content. Log
+                  // with full context so the cause can be traced; return empty
+                  // object (current behavior) to avoid throwing.
+                  try {
+                    
+                    require("fs").appendFileSync("/tmp/proxy-tool-warn.log",
+                      `[${new Date().toISOString()}] MALFORMED tool_call args from vLLM: name=${t.name ?? "?"} parseErr=${(parseErr as Error).message} raw=${JSON.stringify(raw.slice(0, 1000))}\n`);
+                  } catch { /* ignore */ }
                   return {};
                 }
               })(),
