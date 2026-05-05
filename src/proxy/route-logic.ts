@@ -153,8 +153,18 @@ export function selectRoute(params: SelectRouteParams): SelectRouteResult | null
   const vllmServers = onlineServers.filter((s) => s.backendType === "vllm");
   const ollamaServers = onlineServers.filter((s) => s.backendType === "ollama");
   const modelSize = deriveModelSize(ollamaServers, modelName);
+  // HuggingFace-style model names (containing "/") are vLLM-only by convention
+  // — Ollama can't pull "Qwen/Qwen3.6-35B-A3B-FP8" from anywhere. Excluding
+  // them from the Ollama candidate set prevents the catch-all fallback from
+  // routing a 35B vLLM model to e.g. an 8GB Jetson, which then 404s during
+  // warmup and surfaces to the user as "model not found on any available server."
+  const isVllmOnlyName = modelName.includes("/");
   let filteredOllama = ollamaServers;
-  if (modelSize !== null) {
+  if (isVllmOnlyName) {
+    filteredOllama = ollamaServers.filter((s) =>
+      s.loadedModels.some((m) => m.name === modelName)
+    );
+  } else if (modelSize !== null) {
     filteredOllama = ollamaServers.filter((s) => {
       const ramBytes = s.totalRamGb * 1024 ** 3;
       const fits = ramBytes * MODEL_FIT_THRESHOLD >= modelSize;

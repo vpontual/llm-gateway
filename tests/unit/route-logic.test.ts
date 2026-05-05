@@ -693,3 +693,38 @@ test("selectRoute picks the largest reported size when sizes differ across serve
   assert.ok(result);
   assert.equal(result.server.name, "dgx");
 });
+
+
+test("selectRoute returns null for HF-named model when only Ollama servers available", () => {
+  // Regression test: vcode reported "model not found on any available server"
+  // when DGX (which has Qwen/Qwen3.6-... loaded) was busy and the proxy fell
+  // back to Nano 1, an 8GB Jetson that could never serve a 35B vLLM model.
+  // HF-style names (containing "/") should NOT route to Ollama servers that
+  // don't already have the model loaded — Ollama can't pull HF paths.
+  const result = selectRoute({
+    onlineServers: [nano1, agx],  // no vLLM candidates, only Ollama
+    modelName: "Qwen/Qwen3.6-35B-A3B-FP8",
+    optimisticServerId: null,
+    lastRoutedServerId: null,
+    roundRobinCounter: 0,
+  });
+  assert.equal(result, null);
+});
+
+test("selectRoute allows HF-named model on Ollama if already loaded there", () => {
+  // Conservative carve-out: if an Ollama server happens to have the model
+  // loaded (rare for HF paths but possible), keep it as a candidate.
+  const nanoWithHf = makeServer({
+    ...nano1,
+    loadedModels: [loadedModel("Qwen/Qwen3.6-35B-A3B-FP8")],
+  });
+  const result = selectRoute({
+    onlineServers: [nanoWithHf, agx],
+    modelName: "Qwen/Qwen3.6-35B-A3B-FP8",
+    optimisticServerId: null,
+    lastRoutedServerId: null,
+    roundRobinCounter: 0,
+  });
+  assert.ok(result);
+  assert.equal(result.server.name, "nano1");
+});
