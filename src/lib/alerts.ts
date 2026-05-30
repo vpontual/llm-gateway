@@ -6,8 +6,11 @@ import { formatUptime } from "./format";
 import type { MetricsAgentResponse } from "./metrics";
 import { AlertCooldown, evaluateMetrics } from "./alert-rules";
 
-// Cooldown instance
-const cooldown = new AlertCooldown(30 * 60 * 1000);
+// State-edge: one alert per (server, type) state transition.
+const cooldown = new AlertCooldown();
+
+// Metric alert types we silently clear when their conditions drop below threshold.
+const METRIC_ALERT_TYPES = ["gpu_temp", "cpu_temp", "disk", "memory"] as const;
 
 // Telegram-formatted alert messages per alert type
 const ALERT_FORMATS: Record<string, (serverName: string, metrics: MetricsAgentResponse) => string> = {
@@ -54,10 +57,20 @@ export async function checkServerAlerts(
     return;
   }
 
+  // Online: silently clear any pending offline alert state.
+  cooldown.markResolved(serverName, "offline");
+
   if (!metrics) return;
 
   // Use evaluateMetrics for threshold checks (single source of truth)
   const conditions = evaluateMetrics(serverName, metrics);
+  const firingTypes = new Set(conditions.map((c) => c.alertType));
+
+  // Silently clear metric alerts whose conditions no longer trip.
+  for (const t of METRIC_ALERT_TYPES) {
+    if (!firingTypes.has(t)) cooldown.markResolved(serverName, t);
+  }
+
   for (const condition of conditions) {
     if (!cooldown.canAlert(serverName, condition.alertType)) continue;
     cooldown.markAlerted(serverName, condition.alertType);
@@ -74,15 +87,13 @@ export async function checkServerAlerts(
     const prevBoots = previousBoots.get(serverName);
 
     if (prevBoots) {
+      // Reboot is point-in-time; previousBoots dedups by boot id, no cooldown needed.
       for (const boot of currentBoots) {
         if (!prevBoots.has(boot)) {
-          if (cooldown.canAlert(serverName, "reboot")) {
-            cooldown.markAlerted(serverName, "reboot");
-            await sendTelegramMessage(
-              `*\ud83d\udd04 Server Rebooted*\n\n*${serverName}*\nBoot detected at: ${boot}\nUptime: ${formatUptime(metrics.uptime_seconds)}`
-            );
-            console.log(`[Alert] ${serverName}: reboot`);
-          }
+          await sendTelegramMessage(
+            `*\ud83d\udd04 Server Rebooted*\n\n*${serverName}*\nBoot detected at: ${boot}\nUptime: ${formatUptime(metrics.uptime_seconds)}`
+          );
+          console.log(`[Alert] ${serverName}: reboot`);
           break;
         }
       }

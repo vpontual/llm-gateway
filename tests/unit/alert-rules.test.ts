@@ -163,6 +163,36 @@ test("AlertCooldown reset clears all tracked alerts", () => {
   assert.equal(cooldown.canAlert("server2", "cpu_temp"), true);
 });
 
+test("AlertCooldown stays silent indefinitely when no reminderMs is set", async () => {
+  const cooldown = new AlertCooldown(); // no reminders
+  cooldown.markAlerted("server1", "offline");
+  assert.equal(cooldown.canAlert("server1", "offline"), false);
+  // Even after a brief delay, no reminder should fire.
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(cooldown.canAlert("server1", "offline"), false);
+});
+
+test("AlertCooldown markResolved re-arms the next alert", () => {
+  const cooldown = new AlertCooldown();
+  cooldown.markAlerted("server1", "offline");
+  assert.equal(cooldown.canAlert("server1", "offline"), false);
+  assert.equal(cooldown.markResolved("server1", "offline"), true);
+  assert.equal(cooldown.canAlert("server1", "offline"), true);
+});
+
+test("AlertCooldown markResolved returns false when no active alert", () => {
+  const cooldown = new AlertCooldown();
+  assert.equal(cooldown.markResolved("server1", "offline"), false);
+});
+
+test("AlertCooldown finite reminderMs fires reminders while state persists", async () => {
+  const cooldown = new AlertCooldown(20);
+  cooldown.markAlerted("server1", "offline");
+  assert.equal(cooldown.canAlert("server1", "offline"), false);
+  await new Promise((r) => setTimeout(r, 35));
+  assert.equal(cooldown.canAlert("server1", "offline"), true);
+});
+
 test("evaluateMetrics applies per-server memory override below default", () => {
   // 5% available -- triggers default 10% floor, but should NOT trigger 2% override
   const metrics = makeMetrics({ memAvailable: 800, memTotal: 16000 });

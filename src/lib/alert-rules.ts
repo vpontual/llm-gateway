@@ -83,25 +83,33 @@ export function evaluateMetrics(
 }
 
 /**
- * Cooldown tracker: prevents duplicate alerts within a time window.
+ * State-edge alert tracker. Fires once when an alert state is entered and
+ * stays silent until `markResolved` clears it. Pass a finite `reminderMs`
+ * to also fire periodic reminders while the state persists; the default
+ * (Infinity) means no reminders — one alert per state transition.
  */
 export class AlertCooldown {
-  private lastAlerted = new Map<string, number>();
+  private active = new Map<string, number>();
 
-  constructor(private cooldownMs: number) {}
+  constructor(private reminderMs: number = Number.POSITIVE_INFINITY) {}
 
   canAlert(serverName: string, alertType: string): boolean {
     const key = `${serverName}:${alertType}`;
-    const last = this.lastAlerted.get(key);
-    if (!last) return true;
-    return Date.now() - last > this.cooldownMs;
+    const last = this.active.get(key);
+    if (last === undefined) return true;
+    if (!Number.isFinite(this.reminderMs)) return false;
+    return Date.now() - last > this.reminderMs;
   }
 
   markAlerted(serverName: string, alertType: string): void {
-    this.lastAlerted.set(`${serverName}:${alertType}`, Date.now());
+    this.active.set(`${serverName}:${alertType}`, Date.now());
+  }
+
+  markResolved(serverName: string, alertType: string): boolean {
+    return this.active.delete(`${serverName}:${alertType}`);
   }
 
   reset(): void {
-    this.lastAlerted.clear();
+    this.active.clear();
   }
 }
