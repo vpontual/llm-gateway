@@ -21,6 +21,8 @@ export interface VllmAdaptContext {
   isStreaming: boolean;
   /** Wall-clock start (ms since epoch) for synthesizing total_duration. */
   startedAt: number;
+  /** OWUI reasoning path: prepend a <think> opener so reasoning is a balanced pair OWUI can parse. */
+  wrapReasoning?: boolean;
 }
 
 // --- Request translation (Ollama-native -> OpenAI /v1) ---
@@ -298,10 +300,19 @@ export function adaptResponseVllmToOllama(buf: Buffer, ctx: VllmAdaptContext): B
   if (ctx.clientPath === "/api/chat") {
     const message = (choice.message ?? {}) as Record<string, unknown>;
     const toolCalls = openAiToolCallsToOllama(message.tool_calls);
+    const chatContent = (message.content as string | undefined) ?? "";
     const ollamaMessage: Record<string, unknown> = {
       role: (message.role as string | undefined) ?? "assistant",
-      content: (message.content as string | undefined) ?? "",
+      content: chatContent,
     };
+    if (ctx.wrapReasoning) {
+      const ci = chatContent.indexOf("</think>");
+      if (ci !== -1) {
+        const thinking = chatContent.slice(0, ci).replace(/^<think>\s*/, "").trim();
+        ollamaMessage.content = chatContent.slice(ci + "</think>".length).replace(/^\s+/, "");
+        if (thinking) ollamaMessage.thinking = thinking;
+      }
+    }
     if (toolCalls) ollamaMessage.tool_calls = toolCalls;
     const out = {
       model,
@@ -379,6 +390,8 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
   let buffer = "";
   let doneEmitted = false;
   let roleEmitted = false;
+  let reasoningPhase = ctx.wrapReasoning === true;
+  let thinkBuf = "";
   let promptTokens = 0;
   let completionTokens = 0;
   let finishReason: string | null = null;
@@ -515,9 +528,38 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
           continue;
         }
 
-        const content = (delta.content as string | undefined) ?? "";
+        let content = (delta.content as string | undefined) ?? "";
         if (content || (!roleEmitted && typeof delta.role === "string")) {
           const role = (delta.role as string | undefined) ?? "assistant";
+          if (ctx.wrapReasoning && reasoningPhase && content) {
+            thinkBuf += content;
+            const ci = thinkBuf.indexOf("</think>");
+            if (ci === -1) {
+              // Hold back up to 7 chars in case "</think>" straddles two chunks.
+              const cut = Math.max(0, thinkBuf.length - 7);
+              const emit = thinkBuf.slice(0, cut);
+              thinkBuf = thinkBuf.slice(cut);
+              if (emit) {
+                this.push(
+                  JSON.stringify({ model: ctx.model, created_at: new Date().toISOString(), message: { role, thinking: emit }, done: false }) + "\n",
+                );
+                roleEmitted = true;
+              }
+              continue;
+            }
+            const before = thinkBuf.slice(0, ci).replace(/^<think>\s*/, "");
+            const after = thinkBuf.slice(ci + "</think>".length).replace(/^\s+/, "");
+            if (before) {
+              this.push(
+                JSON.stringify({ model: ctx.model, created_at: new Date().toISOString(), message: { role, thinking: before }, done: false }) + "\n",
+              );
+              roleEmitted = true;
+            }
+            reasoningPhase = false;
+            thinkBuf = "";
+            content = after;
+            if (!content) continue;
+          }
           const frame = {
             model: ctx.model,
             created_at: new Date().toISOString(),

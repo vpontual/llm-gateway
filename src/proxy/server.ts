@@ -30,7 +30,7 @@ import { sendTelegramMessage } from "../lib/telegram";
 import { detectNativeConversion, convertRequestToNative, convertResponseToV1, createV1StreamTransform } from "./v1-compat";
 import { adaptRequestOllamaToVllm, adaptResponseVllmToOllama, createVllmToOllamaStreamTransform } from "./vllm-adapter";
 
-const PROXY_PORT = 11434;
+const PROXY_PORT = parseInt(process.env.PROXY_PORT || "11434", 10);
 
 // Maximum number of servers to try before giving up on model-not-found retries
 const MAX_ROUTE_RETRIES = 3;
@@ -613,6 +613,41 @@ function isOllamaStreaming(path: string, body: Buffer): boolean {
   }
 }
 
+const OWUI_REASONING_MODELS = ["qwen3.6", "qwen3", "qwen/qwen3", "deepseek-r1", "deepseek_r1"];
+
+/**
+ * OWUI reasoning gate. Open WebUI hits /api/chat from the swarm subnet without
+ * an x-ollama-source tag (backend services tag themselves). For reasoning
+ * models, and only when thinking is not explicitly disabled, ask the adapter to
+ * prepend the missing <think> opener so OWUI renders a balanced reasoning pair.
+ * Every tagged backend, every /v1 client, and non-reasoning models are excluded.
+ */
+function shouldWrapOwuiReasoning(
+  req: http.IncomingMessage,
+  path: string,
+  body: Buffer,
+  model: string | null,
+): boolean {
+  if (path !== "/api/chat") return false;
+  const hasSource = !!req.headers["x-ollama-source"];
+  const hasKey = !!req.headers["x-ollama-api-key"];
+  const m = (model ?? "").toLowerCase();
+  const isReasoning = OWUI_REASONING_MODELS.some((k) => m.includes(k));
+  const fwd = req.headers["x-forwarded-for"];
+  let ip = typeof fwd === "string" ? fwd.split(",")[0].trim() : (req.socket.remoteAddress ?? "");
+  if (ip.startsWith("::ffff:")) ip = ip.slice(7);
+  const subnet = ip.startsWith("10.0.154.");
+  let thinkFalse = false;
+  try {
+    const parsed = JSON.parse(body.toString("utf8") || "{}") as Record<string, unknown>;
+    if (parsed.think === false) thinkFalse = true;
+  } catch {
+    /* non-JSON body: keep default */
+  }
+  const decision = !hasSource && !hasKey && isReasoning && subnet && !thinkFalse;
+  return decision;
+}
+
 /**
  * Build the backend-specific request: effective path, effective body, response
  * translator, and dispatch flags (warmup, injected-defaults log tags). Called
@@ -624,6 +659,7 @@ function prepareBackendRequest(
   clientBody: Buffer,
   model: string | null,
   startedAt: number,
+  wrapReasoning: boolean,
 ): BackendRequest {
   // Generic backends never serve traffic (they're health-check only).
   if (route.backendType === "generic") {
@@ -674,6 +710,7 @@ function prepareBackendRequest(
         model: model ?? "",
         isStreaming,
         startedAt,
+        wrapReasoning,
       };
       return {
         effectivePath: adapted.path,
@@ -813,6 +850,7 @@ async function handleRequest(
   const pinHeader = req.headers["x-ollama-pin-server"];
   const pinServerName = typeof pinHeader === "string" ? pinHeader.trim() : null;
 
+  const wrapReasoning = shouldWrapOwuiReasoning(req, path, body, model);
   const canRetry = model != null && !pinServerName && RETRY_ENDPOINTS.has(path);
   const excludeServerIds: number[] = [];
 
@@ -839,7 +877,7 @@ async function handleRequest(
     }
 
     // Prepare the backend-specific request (injection, translation, transform).
-    const prep = prepareBackendRequest(route, path, body, model, startTime);
+    const prep = prepareBackendRequest(route, path, body, model, startTime, wrapReasoning);
     if (prep.error) {
       if (!res.headersSent) {
         res.writeHead(prep.error.statusCode, { "content-type": "application/json" });
