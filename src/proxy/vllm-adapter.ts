@@ -218,12 +218,22 @@ function adaptEmbed(parsed: Record<string, unknown>): AdaptedRequest {
  * Translate an Ollama-native request into an OpenAI /v1 request for vLLM.
  * Returns null if the path is not translatable (caller should 400).
  */
-export function adaptRequestOllamaToVllm(path: string, body: Buffer): AdaptedRequest | null {
+export function adaptRequestOllamaToVllm(
+  path: string,
+  body: Buffer,
+  preparsed?: Record<string, unknown> | null,
+): AdaptedRequest | null {
   let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(body.toString() || "{}") as Record<string, unknown>;
-  } catch {
-    return null;
+  if (preparsed !== undefined) {
+    // null = body wasn't valid JSON; mirror the parse-failure path.
+    if (preparsed === null) return null;
+    parsed = preparsed;
+  } else {
+    try {
+      parsed = JSON.parse(body.toString() || "{}") as Record<string, unknown>;
+    } catch {
+      return null;
+    }
   }
   if (path === "/api/generate") return adaptGenerate(parsed);
   if (path === "/api/chat") return adaptChat(parsed);

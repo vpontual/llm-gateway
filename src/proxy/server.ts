@@ -24,7 +24,7 @@ import {
 import { db } from "../lib/db";
 import { requestLogs, users } from "../lib/schema";
 import { readJsonEnv } from "../lib/env";
-import { extractModel, injectProxyDefaults } from "./parse";
+import { extractModelFromParsed, injectProxyDefaults } from "./parse";
 import { sendTelegramMessage } from "../lib/telegram";
 import { detectNativeConversion, convertRequestToNative, convertResponseToV1, createV1StreamTransform } from "./v1-compat";
 import { adaptRequestOllamaToVllm, adaptResponseVllmToOllama, createVllmToOllamaStreamTransform } from "./vllm-adapter";
@@ -621,15 +621,25 @@ const vllmKeepAliveNoticeLogged = new Set<number>();
  * `/api/generate` and `/api/chat` default to stream=true in Ollama.
  * Embedding endpoints never stream.
  */
-function isOllamaStreaming(path: string, body: Buffer): boolean {
+function isOllamaStreaming(
+  path: string,
+  body: Buffer,
+  parsed?: Record<string, unknown> | null,
+): boolean {
   if (path === "/api/embed" || path === "/api/embeddings") return false;
   if (body.length === 0) return true;
-  try {
-    const parsed = JSON.parse(body.toString()) as { stream?: boolean };
-    return parsed.stream !== false;
-  } catch {
-    return true;
+  let obj: Record<string, unknown> | null;
+  if (parsed !== undefined) {
+    obj = parsed;
+  } else {
+    try {
+      obj = JSON.parse(body.toString()) as Record<string, unknown>;
+    } catch {
+      return true;
+    }
   }
+  if (!obj) return true; // non-JSON body: keep default (stream)
+  return (obj as { stream?: boolean }).stream !== false;
 }
 
 const OWUI_REASONING_MODELS = ["qwen3.6", "qwen3", "qwen/qwen3", "deepseek-r1", "deepseek_r1"];
@@ -644,7 +654,7 @@ const OWUI_REASONING_MODELS = ["qwen3.6", "qwen3", "qwen/qwen3", "deepseek-r1", 
 function shouldWrapOwuiReasoning(
   req: http.IncomingMessage,
   path: string,
-  body: Buffer,
+  parsed: Record<string, unknown> | null,
   model: string | null,
 ): boolean {
   if (path !== "/api/chat") return false;
@@ -656,13 +666,7 @@ function shouldWrapOwuiReasoning(
   let ip = typeof fwd === "string" ? fwd.split(",")[0].trim() : (req.socket.remoteAddress ?? "");
   if (ip.startsWith("::ffff:")) ip = ip.slice(7);
   const subnet = ip.startsWith("10.0.154.");
-  let thinkFalse = false;
-  try {
-    const parsed = JSON.parse(body.toString("utf8") || "{}") as Record<string, unknown>;
-    if (parsed.think === false) thinkFalse = true;
-  } catch {
-    /* non-JSON body: keep default */
-  }
+  const thinkFalse = parsed?.think === false;
   const decision = !hasSource && !hasKey && isReasoning && subnet && !thinkFalse;
   return decision;
 }
@@ -676,6 +680,7 @@ function prepareBackendRequest(
   route: { serverId: number; serverName: string; backendType: "ollama" | "vllm" | "generic" },
   clientPath: string,
   clientBody: Buffer,
+  parsedBody: Record<string, unknown> | null,
   model: string | null,
   startedAt: number,
   wrapReasoning: boolean,
@@ -713,7 +718,7 @@ function prepareBackendRequest(
 
     // /api/* paths: translate to /v1/*.
     if (VLLM_TRANSLATABLE_PATHS.has(clientPath)) {
-      const adapted = adaptRequestOllamaToVllm(clientPath, clientBody);
+      const adapted = adaptRequestOllamaToVllm(clientPath, clientBody, parsedBody);
       if (!adapted) {
         return {
           effectivePath: clientPath,
@@ -723,7 +728,7 @@ function prepareBackendRequest(
           error: { statusCode: 400, message: "invalid JSON body for backend translation" },
         };
       }
-      const isStreaming = isOllamaStreaming(clientPath, clientBody);
+      const isStreaming = isOllamaStreaming(clientPath, clientBody, parsedBody);
       const ctx = {
         clientPath,
         model: model ?? "",
@@ -849,9 +854,21 @@ async function handleRequest(
   const body: Buffer =
     method !== "GET" && method !== "HEAD" ? await readBody(req) : Buffer.alloc(0);
 
+  // Parse the body ONCE here and reuse it across model extraction, the OWUI
+  // reasoning gate, streaming detection, and the vLLM adapter — instead of each
+  // helper re-parsing the (potentially large) body. null = empty or non-JSON.
+  let parsedBody: Record<string, unknown> | null = null;
+  if (body.length > 0) {
+    try {
+      parsedBody = JSON.parse(body.toString()) as Record<string, unknown>;
+    } catch {
+      parsedBody = null;
+    }
+  }
+
   // Extract model from request body. Done before any backend-specific
   // translation so routing and logging see the client's intent directly.
-  const model = MODEL_ENDPOINTS.has(path) ? extractModel(body) : null;
+  const model = MODEL_ENDPOINTS.has(path) ? extractModelFromParsed(parsedBody) : null;
 
   // Write-protection: require valid API key for destructive operations
   if (PROTECT_WRITES && WRITE_ENDPOINTS.has(path)) {
@@ -869,7 +886,7 @@ async function handleRequest(
   const pinHeader = req.headers["x-ollama-pin-server"];
   const pinServerName = typeof pinHeader === "string" ? pinHeader.trim() : null;
 
-  const wrapReasoning = shouldWrapOwuiReasoning(req, path, body, model);
+  const wrapReasoning = shouldWrapOwuiReasoning(req, path, parsedBody, model);
   const canRetry = model != null && !pinServerName && RETRY_ENDPOINTS.has(path);
   const excludeServerIds: number[] = [];
 
@@ -896,7 +913,7 @@ async function handleRequest(
     }
 
     // Prepare the backend-specific request (injection, translation, transform).
-    const prep = prepareBackendRequest(route, path, body, model, startTime, wrapReasoning);
+    const prep = prepareBackendRequest(route, path, body, parsedBody, model, startTime, wrapReasoning);
     if (prep.error) {
       if (!res.headersSent) {
         res.writeHead(prep.error.statusCode, { "content-type": "application/json" });

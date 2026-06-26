@@ -4,10 +4,19 @@
  * Extract the model name from an Ollama API request body.
  * Handles both "model" (standard) and "name" (used by /api/copy, /api/create) fields.
  */
+/**
+ * Extract the model name from an already-parsed request body. Lets the proxy
+ * parse the body once and reuse it instead of re-parsing per helper.
+ */
+export function extractModelFromParsed(parsed: Record<string, unknown> | null): string | null {
+  if (!parsed) return null;
+  const m = parsed.model ?? parsed.name;
+  return typeof m === "string" ? m : null;
+}
+
 export function extractModel(body: Buffer): string | null {
   try {
-    const parsed = JSON.parse(body.toString());
-    return parsed.model ?? parsed.name ?? null;
+    return extractModelFromParsed(JSON.parse(body.toString()) as Record<string, unknown>);
   } catch {
     return null;
   }

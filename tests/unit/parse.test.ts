@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractModel, injectProxyDefaults } from "../../src/proxy/parse";
+import { extractModel, extractModelFromParsed, injectProxyDefaults } from "../../src/proxy/parse";
+
+test("extractModelFromParsed returns null for null/missing/non-string", () => {
+  assert.equal(extractModelFromParsed(null), null);
+  assert.equal(extractModelFromParsed({ foo: 1 }), null);
+  assert.equal(extractModelFromParsed({ model: 5 }), null); // non-string ignored
+});
+
+test("extractModelFromParsed reads model, then falls back to name", () => {
+  assert.equal(extractModelFromParsed({ model: "a" }), "a");
+  assert.equal(extractModelFromParsed({ name: "b" }), "b");
+  assert.equal(extractModelFromParsed({ model: "a", name: "b" }), "a");
+});
 
 test("extractModel parses model field from JSON body", () => {
   const body = Buffer.from(JSON.stringify({ model: "llama3:8b", prompt: "hello" }));
