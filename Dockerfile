@@ -16,6 +16,8 @@ RUN npm run build
 FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+# Pin UTC so retention cutoffs (computed as UTC ISO strings) match the DB's now().
+ENV TZ=UTC
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 COPY --from=builder /app/public ./public

@@ -52,7 +52,7 @@ setInterval(() => {
 // Endpoints where we extract a model field from the request body
 // Write operations that require API key when PROXY_PROTECT_WRITES is enabled
 const WRITE_ENDPOINTS = new Set(["/api/pull", "/api/delete", "/api/copy", "/api/create"]);
-const MAX_BODY_SIZE = 100 * 1024 * 1024; // 100MB body size limit
+const MAX_BODY_SIZE = 32 * 1024 * 1024; // 32MB body size limit (ample for chat/embeddings; bodies are fully buffered for routing/retry on small ARM nodes)
 // Secure by default: destructive write endpoints (/api/pull,delete,copy,create)
 // require a valid API key. Opt out explicitly with PROXY_PROTECT_WRITES=false.
 // Note: the dashboard and telegram bot pull/delete by hitting backend hosts
@@ -1010,7 +1010,7 @@ async function handleRequest(
       );
       recordError(route.serverId);
       excludeServerIds.push(route.serverId);
-      clearOptimisticLoad(model!, route.serverId);
+      if (model) clearOptimisticLoad(model, route.serverId);
       continue;
     }
 

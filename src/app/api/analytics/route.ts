@@ -181,18 +181,15 @@ export async function GET(request: NextRequest) {
       statusCode: r.statusCode,
       count: r.count,
     })),
-    routingReasons:
-      reasonRows.length > 0
-        ? reasonRows.map((r) => {
-            const reasonTotal = reasonRows.reduce((s, x) => s + x.count, 0);
-            return {
-              reason: r.reason,
-              count: r.count,
-              percentage:
-                Math.round((r.count / reasonTotal) * 1000) / 10,
-            };
-          })
-        : null,
+    routingReasons: (() => {
+      if (reasonRows.length === 0) return null;
+      const reasonTotal = reasonRows.reduce((s, x) => s + x.count, 0); // hoisted out of the map
+      return reasonRows.map((r) => ({
+        reason: r.reason,
+        count: r.count,
+        percentage: Math.round((r.count / reasonTotal) * 1000) / 10,
+      }));
+    })(),
   });
 });
 }

@@ -39,7 +39,8 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5434:5432"
+      # Bind to loopback only — don't expose Postgres on the LAN.
+      - "127.0.0.1:5434:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ollama_fleet -d ollama_fleet"]
       interval: 5s
