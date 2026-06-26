@@ -81,7 +81,7 @@ export const systemMetrics = pgTable("system_metrics", {
 export const requestLogs = pgTable("request_logs", {
   id: serial("id").primaryKey(),
   sourceIp: text("source_ip").notNull(),
-  userId: integer("user_id").references(() => users.id),
+  userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
   model: text("model"),
   endpoint: text("endpoint").notNull(),
   method: text("method").notNull(),

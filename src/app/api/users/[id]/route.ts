@@ -69,7 +69,12 @@ export async function DELETE(
       return NextResponse.json({ error: "Cannot delete yourself" }, { status: 400 });
     }
 
-    await db.delete(users).where(eq(users.id, targetId));
+    try {
+      await db.delete(users).where(eq(users.id, targetId));
+    } catch (err) {
+      console.error(`Failed to delete user ${targetId}:`, err);
+      return jsonError("Failed to delete user", 500);
+    }
     return NextResponse.json({ ok: true });
   });
 }
