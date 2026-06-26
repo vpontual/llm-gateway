@@ -153,21 +153,23 @@ function discoverJobsFromEnv(containers: ContainerEnv[]): DiscoveredJob[] {
 }
 
 export async function GET() {
-  try {
-    const containers = await getContainerEnvVars();
-    const discoveredJobs = discoverJobsFromEnv(containers);
+  return withAdmin(async () => {
+    try {
+      const containers = await getContainerEnvVars();
+      const discoveredJobs = discoverJobsFromEnv(containers);
 
-    return NextResponse.json({
-      containers: containers.length,
-      jobs: discoveredJobs,
-    });
-  } catch (error) {
-    console.error("Discovery failed:", error);
-    return NextResponse.json(
-      { error: "Failed to discover jobs. Is Docker socket mounted?" },
-      { status: 500 }
-    );
-  }
+      return NextResponse.json({
+        containers: containers.length,
+        jobs: discoveredJobs,
+      });
+    } catch (error) {
+      console.error("Discovery failed:", error);
+      return NextResponse.json(
+        { error: "Failed to discover jobs. Is Docker socket mounted?" },
+        { status: 500 }
+      );
+    }
+  });
 }
 
 export async function POST() {

@@ -72,10 +72,17 @@ export async function pollServer(host: string) {
     getAvailableModels(host),
   ]);
 
+  // `getRunningModels` returns null when /api/ps failed. checkHealth hits a
+  // different endpoint (/), so the host can read "up" while /api/ps blips. In
+  // that case return null (= "loaded set unknown") rather than [] so the poller
+  // carries forward last-known models instead of recording a false "all
+  // unloaded". When the host is genuinely offline, [] is correct.
+  const runningModels = running ? running.models : isOnline ? null : [];
+
   return {
     isOnline,
     version,
-    runningModels: running?.models ?? [],
+    runningModels,
     availableModels: available?.models ?? [],
   };
 }

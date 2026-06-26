@@ -53,7 +53,11 @@ setInterval(() => {
 // Write operations that require API key when PROXY_PROTECT_WRITES is enabled
 const WRITE_ENDPOINTS = new Set(["/api/pull", "/api/delete", "/api/copy", "/api/create"]);
 const MAX_BODY_SIZE = 100 * 1024 * 1024; // 100MB body size limit
-const PROTECT_WRITES = process.env.PROXY_PROTECT_WRITES === "true" || process.env.PROXY_PROTECT_WRITES === "1";
+// Secure by default: destructive write endpoints (/api/pull,delete,copy,create)
+// require a valid API key. Opt out explicitly with PROXY_PROTECT_WRITES=false.
+// Note: the dashboard and telegram bot pull/delete by hitting backend hosts
+// directly (not through this proxy), so they are unaffected.
+const PROTECT_WRITES = process.env.PROXY_PROTECT_WRITES !== "false" && process.env.PROXY_PROTECT_WRITES !== "0";
 
 const MODEL_ENDPOINTS = new Set([
   "/api/generate",
@@ -201,7 +205,12 @@ async function readBody(req: http.IncomingMessage): Promise<Buffer> {
 }
 
 
-async function logRequest(
+// Request logs are buffered and flushed in batches. On a small ARM Postgres
+// with a 10-connection pool, a per-request INSERT competes with routing reads
+// and the poller's writes; batching turns ~N inserts/sec into ~1.
+const logBuffer: (typeof requestLogs.$inferInsert)[] = [];
+
+function logRequest(
   sourceIp: string,
   userId: number | null,
   model: string | null,
@@ -212,24 +221,35 @@ async function logRequest(
   statusCode: number | null,
   durationMs: number,
   routingReason: string | null = null
-) {
+): void {
+  logBuffer.push({
+    sourceIp,
+    userId,
+    model,
+    endpoint,
+    method,
+    targetServerId,
+    targetHost,
+    statusCode,
+    durationMs,
+    routingReason,
+  });
+}
+
+async function flushRequestLogs(): Promise<void> {
+  if (logBuffer.length === 0) return;
+  const batch = logBuffer.splice(0, logBuffer.length);
   try {
-    await db.insert(requestLogs).values({
-      sourceIp,
-      userId,
-      model,
-      endpoint,
-      method,
-      targetServerId,
-      targetHost,
-      statusCode,
-      durationMs,
-      routingReason,
-    });
+    await db.insert(requestLogs).values(batch);
   } catch (err) {
-    console.error("Failed to log request:", err);
+    console.error(`Failed to flush ${batch.length} request log(s):`, err);
   }
 }
+
+const logFlushTimer = setInterval(() => {
+  void flushRequestLogs();
+}, 1000);
+logFlushTimer.unref();
 
 interface ProxyResult {
   statusCode: number;
@@ -1077,16 +1097,15 @@ async function main() {
     console.log("Routing requests to Ollama fleet servers");
   });
 
-  // Graceful shutdown
-  process.on("SIGTERM", () => {
+  // Graceful shutdown: stop accepting connections, then flush buffered logs.
+  const shutdown = () => {
     console.log("Shutting down proxy...");
-    server.close(() => process.exit(0));
-  });
-
-  process.on("SIGINT", () => {
-    console.log("Shutting down proxy...");
-    server.close(() => process.exit(0));
-  });
+    server.close(() => {
+      void flushRequestLogs().finally(() => process.exit(0));
+    });
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
 
 main().catch((err) => {

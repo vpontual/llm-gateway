@@ -1,7 +1,7 @@
 // Telegram bot -- responds to /status, /last_reboot, /pull_missing commands
 
 import { db } from "./db";
-import { servers, serverSnapshots, systemMetrics, serverEvents, userTelegramConfigs, requestLogs } from "./schema";
+import { servers, serverSnapshots, systemMetrics, serverEvents, userTelegramConfigs, requestLogs, users } from "./schema";
 import { eq, desc, and, isNotNull } from "drizzle-orm";
 import { getTelegramConfig, isTelegramConfigured } from "./telegram";
 import { formatUptime, timeAgo } from "./format";
@@ -245,7 +245,7 @@ async function handleHelp(botToken: string, chatId: number): Promise<void> {
 
 // --- Command dispatcher ---
 
-async function processCommand(botToken: string, chatId: number, text: string): Promise<void> {
+async function processCommand(botToken: string, chatId: number, text: string, isAdmin: boolean): Promise<void> {
   // Strip @botname suffix and normalize
   const parts = text.trim().split(/\s+/);
   const cmd = parts[0].toLowerCase().split("@")[0];
@@ -256,6 +256,11 @@ async function processCommand(botToken: string, chatId: number, text: string): P
   } else if (cmd === "/last_reboot" || cmd === "/lastreboot") {
     await handleLastReboot(botToken, chatId);
   } else if (cmd === "/pull_missing" || cmd === "/pullmissing") {
+    // /pull_missing triggers model downloads on the fleet — admins only.
+    if (!isAdmin) {
+      await sendReply(botToken, chatId, "⛔ /pull_missing is admin-only.");
+      return;
+    }
     await handlePullMissing(botToken, chatId, args);
   } else if (cmd === "/help" || cmd === "/start") {
     await handleHelp(botToken, chatId);
@@ -272,6 +277,8 @@ interface BotListener {
   running: boolean;
   // Consecutive poll failures. Drives exponential backoff and log suppression.
   errorStreak: number;
+  // Whether this bot's owner may run admin commands (e.g. /pull_missing).
+  isAdmin: boolean;
 }
 
 // Normal cadence between long-polls; backoff grows from here on failure.
@@ -323,7 +330,7 @@ async function pollBotUpdates(listener: BotListener): Promise<void> {
       if (String(msg.chat.id) !== listener.chatId) continue;
 
       try {
-        await processCommand(listener.botToken, msg.chat.id, msg.text);
+        await processCommand(listener.botToken, msg.chat.id, msg.text, listener.isAdmin);
       } catch (err) {
         console.error(`[TelegramBot:${listener.label}] Error processing command:`, err);
       }
@@ -365,8 +372,10 @@ async function syncUserBotListeners(): Promise<void> {
         chatId: userTelegramConfigs.chatId,
         userId: userTelegramConfigs.userId,
         isEnabled: userTelegramConfigs.isEnabled,
+        isAdmin: users.isAdmin,
       })
-      .from(userTelegramConfigs);
+      .from(userTelegramConfigs)
+      .innerJoin(users, eq(userTelegramConfigs.userId, users.id));
 
     const currentTokens = new Set<string>();
 
@@ -384,6 +393,7 @@ async function syncUserBotListeners(): Promise<void> {
         lastUpdateId: 0,
         running: false,
         errorStreak: 0,
+        isAdmin: config.isAdmin,
       };
 
       activeListeners.set(config.botToken, listener);
@@ -416,6 +426,7 @@ export async function startTelegramBot(): Promise<void> {
         lastUpdateId: 0,
         running: false,
         errorStreak: 0,
+        isAdmin: true, // env-configured global bot is the operator's
       };
       activeListeners.set(botToken, globalListener);
       startBotLoop(globalListener);

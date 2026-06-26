@@ -18,6 +18,11 @@ import { resetStuckEvictionIfUnloaded } from "../proxy/router";
 // --- In-memory state for diffing between polls --- loaded models between polls
 const previousModels = new Map<number, Set<string>>();
 
+// Last-known running-model objects per server. Used to carry forward the loaded
+// set when a poll can't determine it (e.g. /api/ps blip while the host is up),
+// so a transient failure doesn't record a false "all models unloaded".
+const previousFullModels = new Map<number, OllamaRunningModel[]>();
+
 // In-memory state for detecting server lifecycle transitions
 const previousOnline = new Map<number, boolean>();
 
@@ -218,8 +223,14 @@ async function pollAllServers() {
           metricsHost ? fetchSystemMetrics(metricsHost) : Promise.resolve(null),
         ]);
 
+        // Resolve running models. null = this poll couldn't determine the loaded
+        // set (e.g. /api/ps blipped while the host stayed up); carry forward the
+        // last-known list rather than recording a false "all unloaded".
+        const runningKnown = result.runningModels !== null;
+        const resolvedRunning = result.runningModels ?? previousFullModels.get(server.id) ?? [];
+
         // Record snapshot
-        const totalVramUsed = result.runningModels.reduce(
+        const totalVramUsed = resolvedRunning.reduce(
           (sum, m) => sum + (m.size_vram ?? 0),
           0
         );
@@ -227,7 +238,7 @@ async function pollAllServers() {
         const snapshotSignature = computeSnapshotSignature({
           isOnline: result.isOnline,
           ollamaVersion: result.version,
-          loadedModels: result.runningModels,
+          loadedModels: resolvedRunning,
           availableModels: result.availableModels,
         });
         const cachedSnapshot = previousSnapshot.get(server.id);
@@ -245,7 +256,7 @@ async function pollAllServers() {
                 serverId: server.id,
                 isOnline: result.isOnline,
                 ollamaVersion: result.version,
-                loadedModels: result.runningModels,
+                loadedModels: resolvedRunning,
                 availableModels: result.availableModels,
                 totalVramUsed: totalVramUsed,
               })
@@ -259,7 +270,7 @@ async function pollAllServers() {
               serverId: server.id,
               isOnline: result.isOnline,
               ollamaVersion: result.version,
-              loadedModels: result.runningModels,
+              loadedModels: resolvedRunning,
               availableModels: result.availableModels,
               totalVramUsed: totalVramUsed,
             })
@@ -406,51 +417,57 @@ async function pollAllServers() {
         }
 
         // --- Detect model changes ---
-        const currentModelNames = new Set(
-          result.runningModels.map((m) => m.name)
-        );
-        const previousModelNames = previousModels.get(server.id) ?? new Set();
+        // Only diff when this poll authoritatively knew the loaded set. A null
+        // result (ps blip while host up) must not emit spurious unloaded events
+        // or clobber previousModels — skip and let the next good poll diff.
+        if (runningKnown) {
+          const currentModelNames = new Set(
+            resolvedRunning.map((m) => m.name)
+          );
+          const previousModelNames = previousModels.get(server.id) ?? new Set();
 
-        // Build a lookup for model details
-        const modelLookup = new Map<string, OllamaRunningModel>();
-        for (const m of result.runningModels) {
-          modelLookup.set(m.name, m);
-        }
-
-        // New models (loaded)
-        for (const name of currentModelNames) {
-          if (!previousModelNames.has(name)) {
-            const model = modelLookup.get(name);
-            await db.insert(modelEvents).values({
-              serverId: server.id,
-              modelName: name,
-              eventType: "loaded",
-              modelSize: model?.size ?? 0,
-              vramSize: model?.size_vram ?? 0,
-              parameterSize: model?.details?.parameter_size ?? null,
-              quantization: model?.details?.quantization_level ?? null,
-            });
-            console.log(`[${server.name}] Model loaded: ${name}`);
+          // Build a lookup for model details
+          const modelLookup = new Map<string, OllamaRunningModel>();
+          for (const m of resolvedRunning) {
+            modelLookup.set(m.name, m);
           }
-        }
 
-        // Removed models (unloaded)
-        for (const name of previousModelNames) {
-          if (!currentModelNames.has(name)) {
-            await db.insert(modelEvents).values({
-              serverId: server.id,
-              modelName: name,
-              eventType: "unloaded",
-              modelSize: 0,
-              vramSize: 0,
-            });
-            console.log(`[${server.name}] Model unloaded: ${name}`);
+          // New models (loaded)
+          for (const name of currentModelNames) {
+            if (!previousModelNames.has(name)) {
+              const model = modelLookup.get(name);
+              await db.insert(modelEvents).values({
+                serverId: server.id,
+                modelName: name,
+                eventType: "loaded",
+                modelSize: model?.size ?? 0,
+                vramSize: model?.size_vram ?? 0,
+                parameterSize: model?.details?.parameter_size ?? null,
+                quantization: model?.details?.quantization_level ?? null,
+              });
+              console.log(`[${server.name}] Model loaded: ${name}`);
+            }
           }
-        }
 
-        // Update in-memory state
-        previousModels.set(server.id, currentModelNames);
-        resetStuckEvictionIfUnloaded(server.id, currentModelNames);
+          // Removed models (unloaded)
+          for (const name of previousModelNames) {
+            if (!currentModelNames.has(name)) {
+              await db.insert(modelEvents).values({
+                serverId: server.id,
+                modelName: name,
+                eventType: "unloaded",
+                modelSize: 0,
+                vramSize: 0,
+              });
+              console.log(`[${server.name}] Model unloaded: ${name}`);
+            }
+          }
+
+          // Update in-memory state
+          previousModels.set(server.id, currentModelNames);
+          previousFullModels.set(server.id, resolvedRunning);
+          resetStuckEvictionIfUnloaded(server.id, currentModelNames);
+        }
       } catch (err) {
         console.error(`Error polling ${server.name}:`, err);
       }

@@ -127,21 +127,38 @@ test("pollServer aggregates health, version, running, available", async () => {
     const r = await pollServer("h:1");
     assert.equal(r.isOnline, true);
     assert.equal(r.version, "1.2.3");
-    assert.equal(r.runningModels[0].name, "run");
+    assert.equal(r.runningModels?.[0]?.name, "run");
     assert.equal(r.availableModels[0].name, "avail");
   } finally {
     restore();
   }
 });
 
-test("pollServer defaults model arrays to [] when endpoints fail", async () => {
+test("pollServer defaults model arrays to [] when endpoints fail (host offline)", async () => {
   const restore = mockFetchThrows();
   try {
     const r = await pollServer("h:1");
     assert.equal(r.isOnline, false);
     assert.equal(r.version, null);
-    assert.deepEqual(r.runningModels, []);
+    assert.deepEqual(r.runningModels, []); // offline => genuinely nothing loaded
     assert.deepEqual(r.availableModels, []);
+  } finally {
+    restore();
+  }
+});
+
+test("pollServer returns null running models when host is up but /api/ps fails", async () => {
+  // health (/) ok and tags ok, but no /api/ps route => getRunningModels null.
+  const restore = mockFetchByUrl({
+    "/api/version": () => new Response(JSON.stringify({ version: "1.0.0" })),
+    "/api/tags": () => new Response(JSON.stringify({ models: [{ name: "avail" }] })),
+    "/": () => new Response("Ollama is running"),
+    // /api/ps falls through to the 404 default => JSON parse fails => null
+  });
+  try {
+    const r = await pollServer("h:1");
+    assert.equal(r.isOnline, true);
+    assert.equal(r.runningModels, null); // unknown, not "[]" — poller carries forward
   } finally {
     restore();
   }
