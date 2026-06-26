@@ -23,6 +23,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle
 COPY --from=builder --chown=nextjs:nodejs /app/dist/proxy.js ./proxy.js
+COPY --from=builder --chown=nextjs:nodejs /app/dist/migrate.js ./migrate.js
 COPY --from=builder --chown=nextjs:nodejs /app/entrypoint.sh ./entrypoint.sh
 RUN chmod +x entrypoint.sh
 USER nextjs

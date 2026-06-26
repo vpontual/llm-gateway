@@ -20,6 +20,14 @@ start_proxy() {
   done
 }
 
+# Run migrations ONCE, before either long-running process starts. This replaces
+# the old design where both processes called migrate() in parallel and raced.
+echo "[entrypoint] Running database migrations..."
+if ! node migrate.js; then
+  echo "[entrypoint] Migration failed; refusing to start. Exiting."
+  exit 1
+fi
+
 start_server &
 start_proxy &
 

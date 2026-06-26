@@ -4,8 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build && npm run build:proxy",
+    "build": "next build && npm run build:proxy && npm run build:migrate",
     "build:proxy": "esbuild src/proxy/server.ts --bundle --platform=node --target=node22 --outfile=dist/proxy.js",
+    "build:migrate": "esbuild src/migrate.ts --bundle --platform=node --target=node22 --outfile=dist/migrate.js",
     "start": "next start",
     "proxy": "node dist/proxy.js",
     "prepare": "sh -c '[ -f scripts/install-githooks.mjs ] && node scripts/install-githooks.mjs || true'",

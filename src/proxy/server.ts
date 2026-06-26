@@ -23,7 +23,6 @@ import {
 } from "./router";
 import { db } from "../lib/db";
 import { requestLogs, users } from "../lib/schema";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { readJsonEnv } from "../lib/env";
 import { extractModel, injectProxyDefaults } from "./parse";
 import { sendTelegramMessage } from "../lib/telegram";
@@ -1052,9 +1051,9 @@ process.on("uncaughtException", (err) => {
 // --- Server startup ---
 
 async function main() {
-  console.log("Running database migrations...");
-  await migrate(db, { migrationsFolder: "./drizzle" });
-  console.log("Migrations applied");
+  // Migrations are applied once by entrypoint.sh (node migrate.js) before this
+  // process starts — no in-process migrate() here (avoids the dual-migrate race
+  // with the Next.js process).
 
   // Log proxy defaults on startup
   const keepAlive = process.env.PROXY_DEFAULT_KEEP_ALIVE ?? "30m";
