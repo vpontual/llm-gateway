@@ -4,6 +4,7 @@ import { db } from "./db";
 import { servers, serverSnapshots, systemMetrics, serverEvents, userTelegramConfigs, requestLogs, users } from "./schema";
 import { eq, desc, and, isNotNull } from "drizzle-orm";
 import { getTelegramConfig, isTelegramConfigured } from "./telegram";
+import { selectPullTarget } from "./pull-target";
 import { formatUptime, timeAgo } from "./format";
 
 interface TelegramUpdate {
@@ -125,8 +126,7 @@ async function findBestPullServer(): Promise<{
   freeVramGb: number;
 } | null> {
   const allServers = await db.select().from(servers);
-  let best: { name: string; host: string; totalRamGb: number; freeVramGb: number } | null = null;
-  let bestFreeVram = -1;
+  const candidates: { server: (typeof allServers)[number]; freeVramBytes: number }[] = [];
 
   for (const server of allServers) {
     const [snap] = await db
@@ -138,19 +138,21 @@ async function findBestPullServer(): Promise<{
 
     if (!snap?.isOnline) continue;
 
-    const freeBytes = server.totalRamGb * 1024 * 1024 * 1024 - (snap.totalVramUsed ?? 0);
-    if (freeBytes > bestFreeVram) {
-      bestFreeVram = freeBytes;
-      best = {
-        name: server.name,
-        host: server.host,
-        totalRamGb: server.totalRamGb,
-        freeVramGb: Math.round((freeBytes / (1024 * 1024 * 1024)) * 10) / 10,
-      };
-    }
+    candidates.push({
+      server,
+      freeVramBytes: server.totalRamGb * 1024 * 1024 * 1024 - (snap.totalVramUsed ?? 0),
+    });
   }
 
-  return best;
+  const best = selectPullTarget(candidates);
+  if (!best) return null;
+
+  return {
+    name: best.server.name,
+    host: best.server.host,
+    totalRamGb: best.server.totalRamGb,
+    freeVramGb: Math.round((best.freeVramBytes / (1024 * 1024 * 1024)) * 10) / 10,
+  };
 }
 
 /**

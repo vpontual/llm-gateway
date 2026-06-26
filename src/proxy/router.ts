@@ -9,6 +9,7 @@ import { db } from "../lib/db";
 import { servers, serverSnapshots } from "../lib/schema";
 import { eq, desc } from "drizzle-orm";
 import { selectRoute, freeVram, type ServerSnapshot } from "./route-logic";
+import { selectPullTarget } from "../lib/pull-target";
 import { BusyRequestTracker, type SlotHandle } from "./busy-tracker";
 import { getDegradedServerIds, recordSuccess, recordError, getErrorRate } from "./health-tracker";
 import { unloadModel } from "../lib/ollama";
@@ -342,20 +343,22 @@ export interface PullRecommendation {
 }
 
 export function getRecommendedPullServer(): PullRecommendation | null {
-  const online = cachedStates.filter((s) => s.isOnline);
-  if (online.length === 0) return null;
+  const candidates = cachedStates
+    .filter((s) => s.isOnline)
+    .map((s) => ({ snap: s, freeVramBytes: freeVram(s) }));
+  const best = selectPullTarget(candidates);
+  if (!best) return null;
 
-  const sorted = [...online].sort((a, b) => freeVram(b) - freeVram(a));
-  const best = sorted[0];
-  const freeGb = Math.round((freeVram(best) / (1024 * 1024 * 1024)) * 10) / 10;
+  const s = best.snap;
+  const freeGb = Math.round((best.freeVramBytes / (1024 * 1024 * 1024)) * 10) / 10;
 
   return {
-    serverName: best.name,
-    serverHost: best.host,
-    totalRamGb: best.totalRamGb,
+    serverName: s.name,
+    serverHost: s.host,
+    totalRamGb: s.totalRamGb,
     freeVramGb: freeGb,
-    loadedModels: best.loadedModels.map((m) => m.name),
-    reason: `Most free VRAM (${freeGb} GB of ${best.totalRamGb} GB)`,
+    loadedModels: s.loadedModels.map((m) => m.name),
+    reason: `Most free VRAM (${freeGb} GB of ${s.totalRamGb} GB)`,
   };
 }
 

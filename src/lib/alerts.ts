@@ -2,7 +2,6 @@ import { isWanUp } from "./wan-health";
 // Server health alerts -- monitors temps, disk, memory, reboots via Telegram
 
 import { isTelegramConfigured, sendTelegramMessage } from "./telegram";
-import { formatUptime } from "./format";
 import type { MetricsAgentResponse } from "./metrics";
 import { AlertCooldown, evaluateMetrics } from "./alert-rules";
 
@@ -27,9 +26,6 @@ const ALERT_FORMATS: Record<string, (serverName: string, metrics: MetricsAgentRe
     return `*\ud83d\udca8 Low Memory*\n\n*${s}*\nMemory usage: ${pct}% (${m.memory.available_mb}MB available of ${m.memory.total_mb}MB)`;
   },
 };
-
-// Track previous boot lists per server to detect new boots
-const previousBoots = new Map<string, Set<string>>();
 
 export async function checkServerAlerts(
   serverName: string,
@@ -81,24 +77,6 @@ export async function checkServerAlerts(
     console.log(`[Alert] ${serverName}: ${condition.alertType}`);
   }
 
-  // Unexpected reboot detection
-  if (metrics.recent_boots && metrics.recent_boots.length > 0) {
-    const currentBoots = new Set(metrics.recent_boots);
-    const prevBoots = previousBoots.get(serverName);
-
-    if (prevBoots) {
-      // Reboot is point-in-time; previousBoots dedups by boot id, no cooldown needed.
-      for (const boot of currentBoots) {
-        if (!prevBoots.has(boot)) {
-          await sendTelegramMessage(
-            `*\ud83d\udd04 Server Rebooted*\n\n*${serverName}*\nBoot detected at: ${boot}\nUptime: ${formatUptime(metrics.uptime_seconds)}`
-          );
-          console.log(`[Alert] ${serverName}: reboot`);
-          break;
-        }
-      }
-    }
-
-    previousBoots.set(serverName, currentBoots);
-  }
+  // Reboot detection lives in the poller (single source of truth \u2014 it also
+  // writes server_events and notifies subscribers). See poller.ts.
 }

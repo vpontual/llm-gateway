@@ -1,4 +1,6 @@
-import { startWanMonitor } from "./wan-health";
+import { startWanMonitor, isWanUp } from "./wan-health";
+import { isTelegramConfigured, sendTelegramMessage } from "./telegram";
+import { formatUptime } from "./format";
 // Fleet poller -- polls all Ollama servers, records snapshots, detects changes
 
 import { db } from "./db";
@@ -401,6 +403,13 @@ async function pollAllServers() {
                 });
                 console.log(`[${server.name}] Reboot detected: ${detail ?? "unknown cause"}${isDisabled ? " (maintenance)" : ""}`);
                 if (!isDisabled) {
+                  // Global env-chat alert (per-user alerts go via notifySubscribedUsers,
+                  // which skips the env chat to avoid a duplicate).
+                  if (isTelegramConfigured() && isWanUp()) {
+                    await sendTelegramMessage(
+                      `*🔄 Server Rebooted*\n\n*${server.name}*\nBoot detected at: ${boot}\nUptime: ${formatUptime(sysMetrics.uptime_seconds)}`
+                    );
+                  }
                   await notifySubscribedUsers({
                     serverId: server.id,
                     serverName: server.name,
