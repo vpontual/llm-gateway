@@ -65,17 +65,18 @@ export function detectNativeConversion(body: Buffer): { parsed: ParsedV1Body; ct
  * - Ollama tool messages have no tool_call_id
  */
 function convertMessagesToNative(messages: unknown[]): unknown[] {
-  return messages.map((msg: any) => {
-    if (!msg || typeof msg !== "object") return msg;
+  return messages.map((msgRaw) => {
+    if (!msgRaw || typeof msgRaw !== "object") return msgRaw;
+    const msg = msgRaw as Record<string, unknown>;
     const converted: Record<string, unknown> = { role: msg.role };
 
     // Flatten array content to string. OpenAI allows content as an array
     // of parts (e.g. [{"type":"text","text":"..."}]) but Ollama expects
     // a plain string.
     if (Array.isArray(msg.content)) {
-      converted.content = msg.content
-        .filter((p: any) => p.type === "text")
-        .map((p: any) => p.text ?? "")
+      converted.content = (msg.content as Array<Record<string, unknown>>)
+        .filter((p) => p?.type === "text")
+        .map((p) => (p.text as string) ?? "")
         .join("");
     } else if (msg.content !== undefined) {
       converted.content = msg.content;
@@ -83,15 +84,19 @@ function convertMessagesToNative(messages: unknown[]): unknown[] {
 
     // Convert assistant tool_calls from OpenAI to Ollama format
     if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
-      converted.tool_calls = msg.tool_calls.map((tc: any) => ({
-        function: {
-          name: tc.function?.name ?? tc.name,
-          arguments:
-            typeof tc.function?.arguments === "string"
-              ? (() => { try { return JSON.parse(tc.function.arguments); } catch { return {}; } })()
-              : tc.function?.arguments ?? {},
-        },
-      }));
+      converted.tool_calls = (msg.tool_calls as unknown[]).map((tcRaw) => {
+        const tc = (tcRaw ?? {}) as Record<string, unknown>;
+        const fn = (tc.function ?? {}) as Record<string, unknown>;
+        return {
+          function: {
+            name: fn.name ?? tc.name,
+            arguments:
+              typeof fn.arguments === "string"
+                ? (() => { try { return JSON.parse(fn.arguments); } catch { return {}; } })()
+                : fn.arguments ?? {},
+          },
+        };
+      });
     }
 
     // Strip tool_call_id from tool messages (Ollama does not use it)
@@ -147,18 +152,19 @@ export function convertRequestToNative(parsed: ParsedV1Body): Buffer {
  * Convert Ollama tool_calls to OpenAI format (arguments as JSON string, with id/type).
  */
 function convertToolCalls(toolCalls: unknown[]): unknown[] {
-  return toolCalls.map((tc: any, i: number) => ({
-    index: i,
-    id: `call_${Date.now()}_${i}`,
-    type: "function",
-    function: {
-      name: tc.function.name,
-      arguments:
-        typeof tc.function.arguments === "string"
-          ? tc.function.arguments
-          : JSON.stringify(tc.function.arguments),
-    },
-  }));
+  return toolCalls.map((tcRaw, i: number) => {
+    const fn = ((tcRaw as Record<string, unknown>)?.function ?? {}) as Record<string, unknown>;
+    return {
+      index: i,
+      id: `call_${Date.now()}_${i}`,
+      type: "function",
+      function: {
+        name: fn.name,
+        arguments:
+          typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments),
+      },
+    };
+  });
 }
 
 /**

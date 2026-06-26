@@ -149,6 +149,32 @@ function loadSourceNames(): Map<string, string> {
 
 const sourceNames = loadSourceNames();
 
+// Only trust X-Forwarded-For when the immediate peer is a known proxy (e.g. the
+// Traefik service IP). Otherwise any LAN client hitting :11434 directly could
+// spoof its source IP in the logs. Configure via TRUSTED_PROXY_IPS (comma-sep).
+// Default: trust nobody -> attribute by the real socket peer.
+const trustedProxies = new Set(
+  (process.env.TRUSTED_PROXY_IPS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+
+function normalizeIp(ip: string): string {
+  return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+}
+
+function getClientIp(req: http.IncomingMessage): string {
+  const socketIp = normalizeIp(req.socket.remoteAddress ?? "unknown");
+  if (trustedProxies.has(socketIp)) {
+    const fwd = req.headers["x-forwarded-for"];
+    if (typeof fwd === "string" && fwd.trim()) {
+      return normalizeIp(fwd.split(",")[0].trim());
+    }
+  }
+  return socketIp;
+}
+
 /**
  * Resolve a human-friendly source identifier from the incoming request.
  */
@@ -162,25 +188,14 @@ function getSourceIdentifier(req: http.IncomingMessage): { source: string; userI
     }
   }
 
-  // 2. Explicit header: services can self-identify
+  // 2. Explicit header: internal services self-identify. This is a trusted-hint
+  //    label only (a caller can set any value); it never grants privilege.
   const sourceHeader = req.headers["x-ollama-source"];
   if (typeof sourceHeader === "string" && sourceHeader.trim()) {
     return { source: sourceHeader.trim(), userId: null };
   }
 
-  // Get the raw IP
-  const forwarded = req.headers["x-forwarded-for"];
-  let ip: string;
-  if (typeof forwarded === "string") {
-    ip = forwarded.split(",")[0].trim();
-  } else {
-    ip = req.socket.remoteAddress ?? "unknown";
-  }
-
-  // Strip ::ffff: IPv4-mapped IPv6 prefix
-  if (ip.startsWith("::ffff:")) {
-    ip = ip.slice(7);
-  }
+  const ip = getClientIp(req);
 
   // 3. Check name mapping
   const name = sourceNames.get(ip);
@@ -663,6 +678,8 @@ function shouldWrapOwuiReasoning(
   const hasKey = !!req.headers["x-ollama-api-key"];
   const m = (model ?? "").toLowerCase();
   const isReasoning = OWUI_REASONING_MODELS.some((k) => m.includes(k));
+  // Note: this gate keeps its own lenient XFF read on purpose — it only decides
+  // reasoning-wrap (no privilege), and OWUI may arrive via a hop that sets XFF.
   const fwd = req.headers["x-forwarded-for"];
   let ip = typeof fwd === "string" ? fwd.split(",")[0].trim() : (req.socket.remoteAddress ?? "");
   if (ip.startsWith("::ffff:")) ip = ip.slice(7);
