@@ -78,11 +78,9 @@ export function ServerCard({
           <h2 className="text-sm font-semibold text-text-primary truncate">
             {server.name}
           </h2>
-          {server.backendType !== "ollama" && (
-            <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded bg-accent/15 text-accent">
-              {server.backendType}
-            </span>
-          )}
+          <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded bg-accent/15 text-accent">
+            {server.backendType}
+          </span>
           {server.isDisabled && (
             <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded bg-warning/15 text-warning">
               maintenance
