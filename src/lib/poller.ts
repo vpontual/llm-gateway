@@ -211,7 +211,7 @@ async function pollAllServers() {
         const metricsHost = getMetricsHost(server.host);
 
         // Dispatch to the right poller based on backend type
-        const backendType = (server.backendType as string) ?? "ollama";
+        const backendType = server.backendType ?? "ollama";
         const pollFn =
           backendType === "vllm" ? pollVllmServer :
           backendType === "generic" ? pollGenericServer :
@@ -497,6 +497,14 @@ let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 // --- Poller lifecycle ---
 
 export async function startPoller() {
+  // Retention cleanup runs independently of fleet config. request_logs is written
+  // by the proxy process, so the time-series tables must be pruned even if this
+  // process has no servers configured — otherwise they grow unbounded.
+  cleanOldData().catch((err) => console.error("[Poller] Cleanup error:", err));
+  cleanupInterval = setInterval(() => {
+    cleanOldData().catch((err) => console.error("[Poller] Cleanup error:", err));
+  }, 60 * 60 * 1000);
+
   const configs = getServerConfigs();
   if (configs.length === 0) {
     console.error("No servers configured, poller not starting");
@@ -529,10 +537,7 @@ export async function startPoller() {
   }, intervalSec * 1000);
   console.log(`Polling every ${intervalSec}s`);
 
-  // Clean old snapshots once per hour
-  cleanupInterval = setInterval(() => {
-    cleanOldData().catch((err) => console.error('[Poller] Cleanup error:', err));
-  }, 60 * 60 * 1000);
+  // (Retention cleanup started above, before the no-servers early return.)
 
   // Start WAN health monitor (own interval, independent of fleet polling)
   startWanMonitor();

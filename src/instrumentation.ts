@@ -15,12 +15,12 @@ export async function register() {
     const adminPass = process.env.ADMIN_PASSWORD;
 
     if (adminUser && adminPass) {
-      const { hashPassword, generateApiKey } = await import("./lib/auth");
+      const { hashPassword, generateApiKey, hashApiKey } = await import("./lib/auth");
       const [user] = await db.insert(users).values({
         username: adminUser.toLowerCase().trim(),
         passwordHash: await hashPassword(adminPass),
         isAdmin: true,
-        apiKey: generateApiKey(),
+        apiKey: hashApiKey(generateApiKey()), // store hash; admin regenerates to get a usable key
       }).returning();
       console.log("[Setup] Admin user created:", adminUser);
 

@@ -25,6 +25,7 @@ import { db } from "../lib/db";
 import { requestLogs, users } from "../lib/schema";
 import { readJsonEnv } from "../lib/env";
 import { extractModelFromParsed, injectProxyDefaults } from "./parse";
+import { hashApiKey } from "../lib/api-key-hash";
 import { sendTelegramMessage } from "../lib/telegram";
 import { detectNativeConversion, convertRequestToNative, convertResponseToV1, createV1StreamTransform } from "./v1-compat";
 import { adaptRequestOllamaToVllm, adaptResponseVllmToOllama, createVllmToOllamaStreamTransform } from "./vllm-adapter";
@@ -155,7 +156,7 @@ function getSourceIdentifier(req: http.IncomingMessage): { source: string; userI
   // 1. API key header for user identification
   const apiKeyHeader = req.headers["x-ollama-api-key"];
   if (typeof apiKeyHeader === "string" && apiKeyHeader.trim()) {
-    const user = apiKeyCache.get(apiKeyHeader.trim());
+    const user = apiKeyCache.get(hashApiKey(apiKeyHeader.trim()));
     if (user) {
       return { source: user.username, userId: user.userId };
     }
@@ -873,7 +874,7 @@ async function handleRequest(
   // Write-protection: require valid API key for destructive operations
   if (PROTECT_WRITES && WRITE_ENDPOINTS.has(path)) {
     const apiKeyHeader = req.headers["x-ollama-api-key"];
-    const validKey = typeof apiKeyHeader === "string" && apiKeyCache.get(apiKeyHeader.trim());
+    const validKey = typeof apiKeyHeader === "string" && apiKeyCache.get(hashApiKey(apiKeyHeader.trim()));
     if (!validKey) {
       res.writeHead(401);
       res.end(JSON.stringify({ error: "API key required for write operations. Set X-Ollama-Api-Key header." }));

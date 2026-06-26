@@ -18,7 +18,7 @@ export const servers = pgTable("servers", {
   name: text("name").notNull(),
   host: text("host").notNull().unique(),
   totalRamGb: integer("total_ram_gb").notNull(),
-  backendType: text("backend_type").default("ollama").notNull(),
+  backendType: text("backend_type").$type<"ollama" | "vllm" | "generic">().default("ollama").notNull(),
   maxConcurrent: integer("max_concurrent").default(1).notNull(),
   isDisabled: boolean("is_disabled").default(false).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),

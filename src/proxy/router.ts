@@ -8,7 +8,6 @@
 import { db } from "../lib/db";
 import { servers, serverSnapshots } from "../lib/schema";
 import { eq, desc } from "drizzle-orm";
-import type { OllamaRunningModel, OllamaAvailableModel } from "../lib/types";
 import { selectRoute, freeVram, type ServerSnapshot } from "./route-logic";
 import { BusyRequestTracker, type SlotHandle } from "./busy-tracker";
 import { getDegradedServerIds, recordSuccess, recordError, getErrorRate } from "./health-tracker";
@@ -122,7 +121,7 @@ export async function refreshServerStates(): Promise<ServerSnapshot[]> {
         loadedModels: latest?.loadedModels ?? [],
         availableModels: latest?.availableModels ?? [],
         totalVramUsed: latest?.totalVramUsed ?? 0,
-        backendType: (server.backendType as "ollama" | "vllm" | "generic") ?? "ollama",
+        backendType: server.backendType ?? "ollama",
         maxConcurrent: server.maxConcurrent ?? 1,
         isDisabled: server.isDisabled ?? false,
       };

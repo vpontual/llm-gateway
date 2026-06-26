@@ -5,8 +5,9 @@ import { users, sessions } from "./schema";
 import { eq, lt } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { hashPassword, verifyPassword, generateApiKey } from "./crypto";
+import { hashApiKey } from "./api-key-hash";
 
-export { hashPassword, verifyPassword, generateApiKey };
+export { hashPassword, verifyPassword, generateApiKey, hashApiKey };
 
 const SESSION_COOKIE = "fleet_session";
 const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days

@@ -3,7 +3,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { users } from "@/lib/schema";
-import { generateApiKey } from "@/lib/auth";
+import { generateApiKey, hashApiKey } from "@/lib/auth";
 import { forbiddenResponse, isSelfOrAdmin, jsonError, withAuth } from "@/lib/api/route-helpers";
 import { eq } from "drizzle-orm";
 import { validateNumericId } from "@/lib/validations/numbers";
@@ -27,8 +27,9 @@ export async function POST(
       return forbiddenResponse();
     }
 
+    // Store only the hash; return the plaintext once (caller must save it now).
     const newKey = generateApiKey();
-    await db.update(users).set({ apiKey: newKey, updatedAt: new Date() }).where(eq(users.id, targetId));
+    await db.update(users).set({ apiKey: hashApiKey(newKey), updatedAt: new Date() }).where(eq(users.id, targetId));
 
     return NextResponse.json({ apiKey: newKey });
   });
