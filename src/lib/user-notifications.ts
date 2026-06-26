@@ -4,6 +4,7 @@ import { isWanUp } from "./wan-health";
 import { db } from "./db";
 import { userTelegramConfigs, userServerSubscriptions, users } from "./schema";
 import { eq, and } from "drizzle-orm";
+import { isTelegramConfigured, getTelegramConfig } from "./telegram";
 
 interface ServerEventNotification {
   serverId: number;
@@ -49,16 +50,28 @@ export async function notifySubscribedUsers(event: ServerEventNotification): Pro
         )
       );
 
-    if (subscribers.length === 0) return;
+    // Avoid double-notifying the global env chat: the global alert path
+    // (checkServerAlerts) already sends "offline" and "reboot" messages to the
+    // env-configured chat, but never "online". So for those two event types,
+    // drop the subscriber whose token+chat exactly matches the global config.
+    let recipients = subscribers;
+    if ((event.eventType === "offline" || event.eventType === "reboot") && isTelegramConfigured()) {
+      const { botToken: envToken, chatId: envChat } = getTelegramConfig();
+      recipients = subscribers.filter(
+        (sub) => !(sub.botToken === envToken && sub.chatId === envChat)
+      );
+    }
+
+    if (recipients.length === 0) return;
 
     const message = formatEventMessage(event);
 
     await Promise.allSettled(
-      subscribers.map((sub) => sendUserTelegram(sub.botToken, sub.chatId, message))
+      recipients.map((sub) => sendUserTelegram(sub.botToken, sub.chatId, message))
     );
 
     console.log(
-      `[UserNotify] ${event.serverName} ${event.eventType}: notified ${subscribers.length} user(s)`
+      `[UserNotify] ${event.serverName} ${event.eventType}: notified ${recipients.length} user(s)`
     );
   } catch (err) {
     console.error("[UserNotify] Error:", err);

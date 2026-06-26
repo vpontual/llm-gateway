@@ -270,7 +270,13 @@ interface BotListener {
   label: string;
   lastUpdateId: number;
   running: boolean;
+  // Consecutive poll failures. Drives exponential backoff and log suppression.
+  errorStreak: number;
 }
+
+// Normal cadence between long-polls; backoff grows from here on failure.
+const BASE_POLL_DELAY_MS = 1000;
+const MAX_POLL_BACKOFF_MS = 60_000;
 
 const activeListeners = new Map<string, BotListener>();
 
@@ -283,8 +289,26 @@ async function pollBotUpdates(listener: BotListener): Promise<void> {
     clearTimeout(timeout);
 
     if (!res.ok) {
-      console.error(`[TelegramBot:${listener.label}] getUpdates failed: ${res.status}`);
+      // A 409 means another getUpdates poller owns this token (e.g. a second
+      // gateway instance during a migration or scale-up — Telegram allows only
+      // one poller per bot). Back off instead of hammering once per second and
+      // flooding the logs. Log only the first failure of a streak.
+      if (listener.errorStreak === 0) {
+        const hint =
+          res.status === 409
+            ? " — another instance is polling this bot token; backing off"
+            : " — backing off";
+        console.error(`[TelegramBot:${listener.label}] getUpdates failed: ${res.status}${hint}`);
+      }
+      listener.errorStreak++;
       return;
+    }
+
+    if (listener.errorStreak > 0) {
+      console.log(
+        `[TelegramBot:${listener.label}] getUpdates recovered after ${listener.errorStreak} failure(s)`
+      );
+      listener.errorStreak = 0;
     }
 
     const data = await res.json();
@@ -306,7 +330,10 @@ async function pollBotUpdates(listener: BotListener): Promise<void> {
     }
   } catch (err: unknown) {
     if (err instanceof Error && err.name === "AbortError") return;
-    console.error(`[TelegramBot:${listener.label}] Poll error:`, err);
+    if (listener.errorStreak === 0) {
+      console.error(`[TelegramBot:${listener.label}] Poll error:`, err);
+    }
+    listener.errorStreak++;
   }
 }
 
@@ -316,7 +343,11 @@ function startBotLoop(listener: BotListener): void {
   const loop = async () => {
     while (listener.running) {
       await pollBotUpdates(listener);
-      await new Promise((r) => setTimeout(r, 1000));
+      const delay =
+        listener.errorStreak === 0
+          ? BASE_POLL_DELAY_MS
+          : Math.min(BASE_POLL_DELAY_MS * 2 ** listener.errorStreak, MAX_POLL_BACKOFF_MS);
+      await new Promise((r) => setTimeout(r, delay));
     }
   };
 
@@ -352,6 +383,7 @@ async function syncUserBotListeners(): Promise<void> {
         label: `user-${config.userId}`,
         lastUpdateId: 0,
         running: false,
+        errorStreak: 0,
       };
 
       activeListeners.set(config.botToken, listener);
@@ -383,6 +415,7 @@ export async function startTelegramBot(): Promise<void> {
         label: "global",
         lastUpdateId: 0,
         running: false,
+        errorStreak: 0,
       };
       activeListeners.set(botToken, globalListener);
       startBotLoop(globalListener);
