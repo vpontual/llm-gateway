@@ -16,7 +16,7 @@
     "test:unit": "npm run test:unit:compile && npm run test:unit:run",
     "test:unit:compile": "tsc -p tsconfig.test.json",
     "test:unit:run": "node --test .test-dist/tests/unit/*.test.js",
-    "test:unit:coverage": "npm run test:unit:compile && node --test --experimental-test-coverage --test-coverage-include='.test-dist/src/**/*.js' --test-coverage-exclude='.test-dist/tests/**' --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=88 .test-dist/tests/unit/**/*.test.js",
+    "test:unit:coverage": "npm run test:unit:compile && node --test --experimental-test-coverage --test-coverage-include='.test-dist/src/**/*.js' --test-coverage-exclude='.test-dist/tests/**' --test-coverage-lines=90 --test-coverage-branches=85 --test-coverage-functions=95 .test-dist/tests/unit/**/*.test.js",
     "coverage": "npm run test:unit:coverage",
     "check": "npm run lint && npm run typecheck && npm run test",
     "smoke": "node scripts/smoke.mjs",

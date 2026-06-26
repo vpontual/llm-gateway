@@ -1,6 +1,6 @@
 # Architecture
 
-LLM Traffic Manager runs two parallel processes inside a single Docker container, backed by PostgreSQL.
+LLM Gateway runs two parallel processes inside a single Docker container, backed by PostgreSQL.
 
 ## Components
 

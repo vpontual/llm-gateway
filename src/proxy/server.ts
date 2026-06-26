@@ -1073,7 +1073,7 @@ async function main() {
   }, 5 * 60 * 1000).unref();
 
   server.listen(PROXY_PORT, () => {
-    console.log(`Ollama proxy listening on port ${PROXY_PORT}`);
+    console.log(`LLM gateway proxy listening on port ${PROXY_PORT}`);
     console.log("Routing requests to Ollama fleet servers");
   });
 

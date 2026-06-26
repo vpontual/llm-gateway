@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Settings - LLM Traffic Manager",
+  title: "Settings - LLM Gateway",
 };
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {

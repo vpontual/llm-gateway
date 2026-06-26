@@ -79,7 +79,7 @@ export async function PUT(request: NextRequest) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: chatId,
-          text: "LLM Traffic Manager: Telegram notifications configured successfully!",
+          text: "LLM Gateway: Telegram notifications configured successfully!",
         }),
       });
     } catch {

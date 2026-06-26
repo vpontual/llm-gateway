@@ -1,4 +1,4 @@
-// Concurrency stress harness for the LLM Traffic Manager proxy.
+// Concurrency stress harness for the LLM Gateway proxy.
 //
 // Fires N parallel workers at the proxy for a bounded duration, recording
 // latency + routing decisions per request. Use this to validate that

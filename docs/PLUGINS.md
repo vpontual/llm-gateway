@@ -1,6 +1,6 @@
 # Plugin System
 
-LLM Traffic Manager supports a plugin architecture for extending functionality. Plugins live in the `plugins/` directory and are loaded at startup.
+LLM Gateway supports a plugin architecture for extending functionality. Plugins live in the `plugins/` directory and are loaded at startup.
 
 ## Plugin Types
 

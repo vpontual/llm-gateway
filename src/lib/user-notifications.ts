@@ -4,7 +4,7 @@ import { isWanUp } from "./wan-health";
 import { db } from "./db";
 import { userTelegramConfigs, userServerSubscriptions, users } from "./schema";
 import { eq, and } from "drizzle-orm";
-import { isTelegramConfigured, getTelegramConfig } from "./telegram";
+import { isTelegramConfigured, getTelegramConfig, postTelegramJson } from "./telegram";
 
 interface ServerEventNotification {
   serverId: number;
@@ -80,18 +80,13 @@ export async function notifySubscribedUsers(event: ServerEventNotification): Pro
 
 async function sendUserTelegram(botToken: string, chatId: string, text: string): Promise<void> {
   const url = "https://api.telegram.org/bot" + botToken + "/sendMessage";
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(10000),
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: "Markdown",
-      disable_web_page_preview: true,
-    }),
+  const res = await postTelegramJson(url, {
+    chat_id: chatId,
+    text,
+    parse_mode: "Markdown",
+    disable_web_page_preview: true,
   });
-  if (!res.ok) {
+  if (res && !res.ok) {
     console.error("[UserNotify] Telegram send failed for chat " + chatId + ": " + res.status);
   }
 }

@@ -5,7 +5,7 @@ import "./globals.css";
 import { AppShell } from "@/components/app-shell";
 
 export const metadata: Metadata = {
-  title: "LLM Traffic Manager",
+  title: "LLM Gateway",
   description: "Monitor and manage your Ollama GPU servers",
 };
 

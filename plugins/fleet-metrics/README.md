@@ -1,6 +1,6 @@
 # Fleet Metrics Agent
 
-A lightweight Python agent that exposes system metrics over HTTP for the LLM Traffic Manager dashboard.
+A lightweight Python agent that exposes system metrics over HTTP for the LLM Gateway dashboard.
 
 Install this on each Ollama server you want to monitor for CPU/GPU temperature, memory, disk, and uptime.
 

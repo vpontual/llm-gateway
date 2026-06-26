@@ -122,7 +122,7 @@ export function NavBar() {
                 <circle cx="384" cy="384" r="36" fill="white" fillOpacity={0.9}/>
                 <rect x="216" y="216" width="80" height="80" rx="14" fill="white" transform="rotate(45 256 256)"/>
               </svg>
-              <span className="text-sm font-semibold text-text-primary hidden sm:inline">LLM Traffic Manager</span>
+              <span className="text-sm font-semibold text-text-primary hidden sm:inline">LLM Gateway</span>
             </Link>
             {NAV_ITEMS.map((item) => (
               <Link

@@ -1,4 +1,4 @@
-# Contributing to LLM Traffic Manager
+# Contributing to LLM Gateway
 
 Thanks for your interest in contributing! Here's how to get started.
 

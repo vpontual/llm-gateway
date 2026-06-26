@@ -43,7 +43,7 @@ export default function LoginPage() {
     <div id="main-content" className="min-h-screen flex items-center justify-center bg-surface">
       <div className="w-full max-w-sm">
         <div className="bg-surface-raised border border-border rounded-xl p-8">
-          <h1 className="text-xl font-bold text-text-primary mb-1">LLM Traffic Manager</h1>
+          <h1 className="text-xl font-bold text-text-primary mb-1">LLM Gateway</h1>
           <p className="text-sm text-text-muted mb-6">Sign in to continue</p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
