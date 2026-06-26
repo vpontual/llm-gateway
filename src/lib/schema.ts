@@ -8,6 +8,7 @@ import {
   timestamp,
   bigint,
   jsonb,
+  index,
 } from "drizzle-orm/pg-core";
 
 // --- Fleet configuration ---
@@ -36,7 +37,9 @@ export const serverSnapshots = pgTable("server_snapshots", {
   availableModels: jsonb("available_models").$type<OllamaAvailableModel[]>().default([]),
   totalVramUsed: bigint("total_vram_used", { mode: "number" }).default(0),
   polledAt: timestamp("polled_at").defaultNow().notNull(),
-});
+}, (t) => [
+  index("idx_server_snapshots_server_polled").on(t.serverId, t.polledAt.desc()),
+]);
 
 export const modelEvents = pgTable("model_events", {
   id: serial("id").primaryKey(),
@@ -50,7 +53,10 @@ export const modelEvents = pgTable("model_events", {
   parameterSize: text("parameter_size"),
   quantization: text("quantization"),
   occurredAt: timestamp("occurred_at").defaultNow().notNull(),
-});
+}, (t) => [
+  index("idx_model_events_occurred").on(t.occurredAt),
+  index("idx_model_events_server_occurred").on(t.serverId, t.occurredAt),
+]);
 
 export const systemMetrics = pgTable("system_metrics", {
   id: serial("id").primaryKey(),
@@ -74,7 +80,9 @@ export const systemMetrics = pgTable("system_metrics", {
   diskUsedGb: integer("disk_used_gb"),
   recentBoots: jsonb("recent_boots").$type<string[]>().default([]),
   polledAt: timestamp("polled_at").defaultNow().notNull(),
-});
+}, (t) => [
+  index("idx_system_metrics_server_polled").on(t.serverId, t.polledAt),
+]);
 
 // --- Proxy request logging ---
 
@@ -91,7 +99,10 @@ export const requestLogs = pgTable("request_logs", {
   durationMs: integer("duration_ms"),
   routingReason: text("routing_reason"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (t) => [
+  index("idx_request_logs_created").on(t.createdAt),
+  index("idx_request_logs_model_created").on(t.model, t.createdAt),
+]);
 
 // --- Job scheduling ---
 
@@ -120,7 +131,11 @@ export const serverEvents = pgTable("server_events", {
   eventType: text("event_type").notNull(), // "offline" | "online" | "reboot"
   detail: text("detail"),
   occurredAt: timestamp("occurred_at").defaultNow().notNull(),
-});
+}, (t) => [
+  index("idx_server_events_occurred").on(t.occurredAt),
+  index("idx_server_events_occurred_at").on(t.occurredAt.desc()),
+  index("idx_server_events_server_id").on(t.serverId),
+]);
 
 // --- Multi-user tables ---
 
