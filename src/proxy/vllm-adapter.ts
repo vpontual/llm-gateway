@@ -315,7 +315,12 @@ export function adaptResponseVllmToOllama(buf: Buffer, ctx: VllmAdaptContext): B
       role: (message.role as string | undefined) ?? "assistant",
       content: chatContent,
     };
-    if (ctx.wrapReasoning) {
+    // vLLM reasoning-parser (qwen3) separates the trace into reasoning_content;
+    // prefer it. Fall back to inline-</think> splitting only when it's absent.
+    const reasoningContent = (message.reasoning_content as string | undefined) ?? "";
+    if (reasoningContent.trim()) {
+      ollamaMessage.thinking = reasoningContent.trim();
+    } else if (ctx.wrapReasoning) {
       const ci = chatContent.indexOf("</think>");
       if (ci !== -1) {
         const thinking = chatContent.slice(0, ci).replace(/^<think>\s*/, "").trim();
@@ -402,6 +407,9 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
   let roleEmitted = false;
   let reasoningPhase = ctx.wrapReasoning === true;
   let thinkBuf = "";
+  // True once vLLM's reasoning-parser has emitted reasoning_content on this
+  // stream — means `content` is already the clean answer, so skip </think> splitting.
+  let reasoningSeen = false;
   let promptTokens = 0;
   let completionTokens = 0;
   let finishReason: string | null = null;
@@ -536,10 +544,26 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
           continue;
         }
 
+        const role = (delta.role as string | undefined) ?? "assistant";
+
+        // vLLM reasoning-parser (qwen3) separates the trace into reasoning_content.
+        // Emit it as Ollama `thinking`; once seen, `content` is the clean answer and
+        // needs no inline-</think> splitting.
+        const reasoning = (delta.reasoning_content as string | undefined) ?? "";
+        if (reasoning) {
+          reasoningSeen = true;
+          this.push(
+            JSON.stringify({ model: ctx.model, created_at: new Date().toISOString(), message: { role, thinking: reasoning }, done: false }) + "\n",
+          );
+          roleEmitted = true;
+        }
+
         let content = (delta.content as string | undefined) ?? "";
         if (content || (!roleEmitted && typeof delta.role === "string")) {
-          const role = (delta.role as string | undefined) ?? "assistant";
-          if (ctx.wrapReasoning && reasoningPhase && content) {
+          // Fallback only for models WITHOUT a reasoning parser (reasoning inline
+          // in content, closed by a bare </think>): engage when no reasoning_content
+          // has appeared on this stream.
+          if (ctx.wrapReasoning && reasoningPhase && content && !reasoningSeen) {
             thinkBuf += content;
             const ci = thinkBuf.indexOf("</think>");
             if (ci === -1) {
