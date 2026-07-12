@@ -398,7 +398,8 @@ export async function getAllOnlineServers(): Promise<ServerSnapshot[]> {
  * X-Ollama-Pin-Server headers from services that know which server they want.
  */
 export async function resolveServerByName(
-  serverName: string
+  serverName: string,
+  modelName?: string | null
 ): Promise<RouteDecision | null> {
   const states = await refreshServerStates();
   const lower = serverName.toLowerCase();
@@ -406,6 +407,20 @@ export async function resolveServerByName(
     (s) => s.isOnline && !s.isDisabled && s.name.toLowerCase() === lower
   );
   if (!server) return null;
+  // Only honor a name-pin when the pinned server actually advertises the
+  // requested model. A pin to a backend that does not serve the model would
+  // otherwise hard-404 (pinned requests also skip failover), so fall through
+  // to model-aware routing instead. Empty availableModels = unknown -> honor pin.
+  if (
+    modelName &&
+    server.availableModels.length > 0 &&
+    !server.availableModels.some((m) => m.name === modelName)
+  ) {
+    console.warn(
+      `[proxy] pin \"${serverName}\" does not advertise model \"${modelName}\" - ignoring pin, using model-aware routing`
+    );
+    return null;
+  }
   return {
     host: server.host,
     serverId: server.id,

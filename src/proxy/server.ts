@@ -911,7 +911,7 @@ async function handleRequest(
   for (let attempt = 0; attempt <= MAX_ROUTE_RETRIES; attempt++) {
     let route;
     if (pinServerName) {
-      route = await resolveServerByName(pinServerName);
+      route = await resolveServerByName(pinServerName, model);
     }
     if (!route && model) {
       route = await routeModel(model, excludeServerIds, path);
