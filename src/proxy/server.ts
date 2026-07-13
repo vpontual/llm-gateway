@@ -661,11 +661,15 @@ function isOllamaStreaming(
 const OWUI_REASONING_MODELS = ["qwen3.6", "qwen3", "qwen/qwen3", "deepseek-r1", "deepseek_r1"];
 
 /**
- * OWUI reasoning gate. Open WebUI hits /api/chat from the swarm subnet without
- * an x-ollama-source tag (backend services tag themselves). For reasoning
- * models, and only when thinking is not explicitly disabled, ask the adapter to
- * prepend the missing <think> opener so OWUI renders a balanced reasoning pair.
- * Every tagged backend, every /v1 client, and non-reasoning models are excluded.
+ * Reasoning-split gate for /api/chat. The DGX runs reasoning-parser OFF (the qwen3
+ * parser is broken for this build — returns empty content), so reasoning arrives
+ * inline as `[trace]</think>[answer]`. For clients that consume Ollama's `thinking`
+ * field, ask the adapter to split the trace out of content so it renders collapsed
+ * instead of leaking inline. Two such clients:
+ *   - Open WebUI: untagged /api/chat from the swarm subnet.
+ *   - vcode: tagged `x-ollama-source: vcode`.
+ * Only reasoning models, and only when thinking isn't explicitly disabled. Everything
+ * else (raw /v1 clients, other tagged backends, non-reasoning models) is untouched.
  */
 function shouldWrapOwuiReasoning(
   req: http.IncomingMessage,
@@ -674,18 +678,21 @@ function shouldWrapOwuiReasoning(
   model: string | null,
 ): boolean {
   if (path !== "/api/chat") return false;
-  const hasSource = !!req.headers["x-ollama-source"];
+  const source = String(req.headers["x-ollama-source"] ?? "");
+  const hasSource = !!source;
   const hasKey = !!req.headers["x-ollama-api-key"];
   const m = (model ?? "").toLowerCase();
   const isReasoning = OWUI_REASONING_MODELS.some((k) => m.includes(k));
   // Note: this gate keeps its own lenient XFF read on purpose — it only decides
-  // reasoning-wrap (no privilege), and OWUI may arrive via a hop that sets XFF.
+  // reasoning-split (no privilege), and OWUI may arrive via a hop that sets XFF.
   const fwd = req.headers["x-forwarded-for"];
   let ip = typeof fwd === "string" ? fwd.split(",")[0].trim() : (req.socket.remoteAddress ?? "");
   if (ip.startsWith("::ffff:")) ip = ip.slice(7);
   const subnet = ip.startsWith("10.0.154.");
   const thinkFalse = parsed?.think === false;
-  const decision = !hasSource && !hasKey && isReasoning && subnet && !thinkFalse;
+  const owui = !hasSource && !hasKey && subnet;
+  const isVcode = source === "vcode";
+  const decision = isReasoning && !thinkFalse && (owui || isVcode);
   return decision;
 }
 
