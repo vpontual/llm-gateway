@@ -23,6 +23,9 @@ export interface VllmAdaptContext {
   startedAt: number;
   /** OWUI reasoning path: prepend a <think> opener so reasoning is a balanced pair OWUI can parse. */
   wrapReasoning?: boolean;
+  /** Client requested `think: false`. With a reasoning-parser on, vLLM can misroute
+   *  the answer into the reasoning field (vLLM #19222) — used to recover it as content. */
+  thinkDisabled?: boolean;
 }
 
 // --- Request translation (Ollama-native -> OpenAI /v1) ---
@@ -321,7 +324,15 @@ export function adaptResponseVllmToOllama(buf: Buffer, ctx: VllmAdaptContext): B
     const reasoningContent =
       (message.reasoning as string | undefined) ?? (message.reasoning_content as string | undefined) ?? "";
     if (reasoningContent.trim()) {
-      ollamaMessage.thinking = reasoningContent.trim();
+      if (ctx.thinkDisabled && !chatContent.trim() && !toolCalls) {
+        // vLLM #19222: with a reasoning-parser on and enable_thinking=false, the
+        // non-streaming path misroutes the whole answer into the reasoning field,
+        // leaving content empty. Thinking was disabled, so there is no reasoning to
+        // hide — fold it back into content so the client isn't left empty-handed.
+        ollamaMessage.content = reasoningContent.trim();
+      } else {
+        ollamaMessage.thinking = reasoningContent.trim();
+      }
     } else if (ctx.wrapReasoning) {
       const ci = chatContent.indexOf("</think>");
       if (ci !== -1) {
@@ -578,6 +589,21 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
           (delta.reasoning as string | undefined) ?? (delta.reasoning_content as string | undefined) ?? "";
         if (reasoning) {
           reasoningSeen = true;
+          // The backend has a reasoning-parser, so the inline-</think> buffering path
+          // is not needed and must be disabled — otherwise content that arrived before
+          // the first reasoning delta stays trapped in thinkBuf and is flushed
+          // out-of-order at emitDone. Flush any trapped content now, in order, then
+          // turn the buffering path off.
+          if (reasoningPhase && thinkBuf) {
+            const trapped = thinkBuf.replace(/^<think>\s*/, "");
+            if (trapped) {
+              this.push(
+                JSON.stringify({ model: ctx.model, created_at: new Date().toISOString(), message: { role, content: trapped }, done: false }) + "\n",
+              );
+            }
+          }
+          reasoningPhase = false;
+          thinkBuf = "";
           this.push(
             JSON.stringify({ model: ctx.model, created_at: new Date().toISOString(), message: { role, thinking: reasoning }, done: false }) + "\n",
           );

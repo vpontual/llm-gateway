@@ -328,6 +328,50 @@ test("adapter: non-stream maps vLLM `reasoning` field to Ollama thinking", () =>
   assert.equal(out.message.thinking, "step one, step two");
 });
 
+test("adapter: non-stream think:false recovers misrouted answer into content (vLLM #19222)", () => {
+  // With a reasoning-parser on and enable_thinking=false, vLLM misroutes the answer
+  // into `reasoning` and leaves content empty. Thinking was disabled, so fold it back.
+  const ctx = makeCtx({ clientPath: "/api/chat", thinkDisabled: true });
+  const buf = adaptResponseVllmToOllama(
+    Buffer.from(
+      JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "", reasoning: "Paris" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 3, completion_tokens: 1 },
+      }),
+    ),
+    ctx,
+  );
+  const out = parseJsonBuf(buf);
+  assert.equal(out.message.content, "Paris");
+  assert.equal(out.message.thinking, undefined);
+});
+
+test("adapter: non-stream think:false does NOT fold reasoning into content when a tool_call is present", () => {
+  const ctx = makeCtx({ clientPath: "/api/chat", thinkDisabled: true });
+  const buf = adaptResponseVllmToOllama(
+    Buffer.from(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "",
+              reasoning: "picking a tool",
+              tool_calls: [{ id: "c0", type: "function", function: { name: "f", arguments: "{}" } }],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }),
+    ),
+    ctx,
+  );
+  const out = parseJsonBuf(buf);
+  assert.equal(out.message.content, "");
+  assert.equal(out.message.thinking, "picking a tool");
+  assert.ok(out.message.tool_calls?.[0], "tool call preserved");
+});
+
 test("adapter: chat response with tool_calls parses arguments back to object", () => {
   const ctx = makeCtx({ clientPath: "/api/chat" });
   const buf = adaptResponseVllmToOllama(
@@ -620,6 +664,22 @@ test("stream: maps vLLM `reasoning` field to Ollama thinking (parser-on path)", 
   assert.equal(joinField(parsed, "thinking"), "let me think it through");
   assert.equal(joinField(parsed, "content"), "the answer");
   assert.equal(parsed[parsed.length - 1].done, true);
+});
+
+test("stream: content before the reasoning field is preserved in order (not dropped/reordered)", async () => {
+  // Defensive: if a content delta arrives before the first reasoning delta on the
+  // wrapReasoning path, it must not stay trapped in thinkBuf and flush out of order.
+  const ctx = makeCtx({ clientPath: "/api/chat", isStreaming: true, wrapReasoning: true });
+  const chunks = [
+    `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "early " } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { reasoning: "R" } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { content: "late" } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+    `data: [DONE]\n\n`,
+  ];
+  const parsed = (await runStream(chunks, ctx)).map((l) => JSON.parse(l));
+  assert.equal(joinField(parsed, "content"), "early late");
+  assert.equal(joinField(parsed, "thinking"), "R");
 });
 
 test("stream: wrapReasoning handles </think> split across chunks", async () => {

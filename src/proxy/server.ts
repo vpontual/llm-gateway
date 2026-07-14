@@ -658,7 +658,10 @@ function isOllamaStreaming(
   return (obj as { stream?: boolean }).stream !== false;
 }
 
-const OWUI_REASONING_MODELS = ["qwen3.6", "qwen3", "qwen/qwen3", "deepseek-r1", "deepseek_r1"];
+// Precise reasoning-model matches only. A bare "qwen3" would false-match plain
+// Instruct variants (e.g. qwen3:4b-nano2), wrongly engaging the </think>-buffering
+// path and defeating token streaming for them.
+const OWUI_REASONING_MODELS = ["qwen3.6", "qwen/qwen3.6", "deepseek-r1", "deepseek_r1"];
 
 /**
  * OWUI reasoning gate. Open WebUI hits /api/chat from the swarm subnet without
@@ -761,6 +764,7 @@ function prepareBackendRequest(
         isStreaming,
         startedAt,
         wrapReasoning,
+        thinkDisabled: parsedBody?.think === false,
       };
       return {
         effectivePath: adapted.path,
