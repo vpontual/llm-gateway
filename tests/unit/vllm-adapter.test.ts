@@ -557,8 +557,9 @@ test("stream: wrapReasoning recovers the answer when </think> never arrives", as
   const parsed = (await runStream(chunks, ctx)).map((l) => JSON.parse(l));
   const content = joinField(parsed, "content");
   assert.ok(content.length > 0, "answer must be recovered as content, not lost");
-  // The full prose is preserved across thinking + content (nothing dropped).
-  assert.ok((joinField(parsed, "thinking") + content).includes("answer inline"));
+  assert.ok(content.includes("answer inline"), "full prose surfaces as content");
+  // No duplication: undelimited prose goes to content only, never also to thinking.
+  assert.equal(joinField(parsed, "thinking"), "", "must not duplicate prose into thinking");
   assert.equal(parsed[parsed.length - 1].done, true);
 });
 
@@ -574,6 +575,7 @@ test("stream: wrapReasoning keeps reasoning hidden on the tool-call path", async
   ];
   const parsed = (await runStream(chunks, ctx)).map((l) => JSON.parse(l));
   assert.equal(joinField(parsed, "content"), "", "prose reasoning must stay hidden, not become content");
+  assert.ok(joinField(parsed, "thinking").includes("which tool"), "reasoning should surface in thinking, not vanish");
   const done = parsed[parsed.length - 1];
   assert.equal(done.done_reason, "tool_calls");
   assert.equal(done.message.tool_calls?.[0]?.function?.name, "read_file");

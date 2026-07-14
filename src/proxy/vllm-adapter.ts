@@ -406,11 +406,10 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
   let doneEmitted = false;
   let roleEmitted = false;
   let reasoningPhase = ctx.wrapReasoning === true;
+  // While in reasoningPhase we buffer content here silently (reasoning is hidden)
+  // until we see the closing </think>. If the tag never comes (prose/tool path),
+  // this whole buffer is recovered in emitDone so the answer is never lost.
   let thinkBuf = "";
-  // Everything streamed as `thinking` while still in reasoningPhase. If the model
-  // never closes with </think> (prose/tool path), this text was actually the answer
-  // and must be recovered as content on flush so the client is never left empty.
-  let reasonedText = "";
   // True once vLLM's reasoning-parser has emitted reasoning_content on this
   // stream — means `content` is already the clean answer, so skip </think> splitting.
   let reasoningSeen = false;
@@ -422,19 +421,20 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
   const emitDone = (push: (frame: string) => void) => {
     if (doneEmitted) return;
     doneEmitted = true;
-    // Recover the answer when the model never emitted </think> (prose path): the
-    // text streamed as `thinking` was actually the response, so surface it as
-    // content BEFORE the done frame (a frame after done:true would be ignored by
-    // clients). Skip when a tool_call was produced — the tool call is the answer
-    // and the prose reasoning stays hidden in `thinking`.
-    if (ctx.clientPath === "/api/chat" && reasoningPhase && accumulatedToolCalls.size === 0) {
-      const recovered = (reasonedText + thinkBuf).replace(/^<think>\s*/, "").replace(/^\s+/, "");
-      if (recovered) {
+    // The model never closed </think>, so everything is still buffered. Flush it
+    // BEFORE the done frame (a frame after done:true would be ignored by clients).
+    // With a tool_call, the tool call is the answer and this prose is reasoning →
+    // hide it in `thinking`. Otherwise the model answered in undelimited prose →
+    // surface it all as `content` so the client is never left with an empty message.
+    if (ctx.clientPath === "/api/chat" && reasoningPhase) {
+      const leftover = thinkBuf.replace(/^<think>\s*/, "").replace(/^\s+/, "").trimEnd();
+      if (leftover) {
+        const field = accumulatedToolCalls.size > 0 ? "thinking" : "content";
         push(
           JSON.stringify({
             model: ctx.model,
             created_at: new Date().toISOString(),
-            message: { role: "assistant", content: recovered },
+            message: { role: "assistant", [field]: leftover },
             done: false,
           }) + "\n",
         );
@@ -586,23 +586,15 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
           // in content, closed by a bare </think>): engage when no reasoning_content
           // has appeared on this stream.
           if (ctx.wrapReasoning && reasoningPhase && content && !reasoningSeen) {
+            // Buffer silently until the closing </think>. Streaming reasoning live
+            // can't be undone, so if the tag never comes (prose path) we'd be unable
+            // to surface the answer as content — instead we hold it all here and
+            // recover it in emitDone. Once </think> is seen, the answer streams
+            // normally (reasoningPhase is off below).
             thinkBuf += content;
             const ci = thinkBuf.indexOf("</think>");
-            if (ci === -1) {
-              // Hold back up to 7 chars in case "</think>" straddles two chunks.
-              const cut = Math.max(0, thinkBuf.length - 7);
-              const emit = thinkBuf.slice(0, cut);
-              thinkBuf = thinkBuf.slice(cut);
-              if (emit) {
-                reasonedText += emit;
-                this.push(
-                  JSON.stringify({ model: ctx.model, created_at: new Date().toISOString(), message: { role, thinking: emit }, done: false }) + "\n",
-                );
-                roleEmitted = true;
-              }
-              continue;
-            }
-            const before = thinkBuf.slice(0, ci).replace(/^<think>\s*/, "");
+            if (ci === -1) continue;
+            const before = thinkBuf.slice(0, ci).replace(/^<think>\s*/, "").trim();
             const after = thinkBuf.slice(ci + "</think>".length).replace(/^\s+/, "");
             if (before) {
               this.push(
