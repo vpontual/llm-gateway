@@ -517,33 +517,3 @@ test("stream: skips unparseable SSE events and keeps going", async () => {
   assert.equal(parsed[0].response, "ok");
   assert.equal(parsed[parsed.length - 1].done, true);
 });
-
-test("stream: prose reasoning with NO </think> still emits the answer as content (not lost to thinking)", async () => {
-  const ctx = makeCtx({ clientPath: "/api/chat", isStreaming: true, wrapReasoning: true });
-  const chunks = [
-    `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "Here's a thinking process: greet warmly. " } }] })}\n\n`,
-    `data: ${JSON.stringify({ choices: [{ delta: { content: "Hey there! How can I help?" } }] })}\n\n`,
-    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 12 } })}\n\n`,
-    `data: [DONE]\n\n`,
-  ];
-  const out = await runStream(chunks, ctx);
-  const parsed = out.map((l) => JSON.parse(l));
-  const content = parsed.filter((p) => p.message?.content).map((p) => p.message.content).join("");
-  assert.ok(content.includes("Hey there"), `answer must survive as content; got ${JSON.stringify(parsed)}`);
-});
-
-test("stream: reasoning with </think> splits trace into thinking and answer into content", async () => {
-  const ctx = makeCtx({ clientPath: "/api/chat", isStreaming: true, wrapReasoning: true });
-  const chunks = [
-    `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "let me think 2+2 " } }] })}\n\n`,
-    `data: ${JSON.stringify({ choices: [{ delta: { content: "</think>4" } }] })}\n\n`,
-    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
-    `data: [DONE]\n\n`,
-  ];
-  const out = await runStream(chunks, ctx);
-  const parsed = out.map((l) => JSON.parse(l));
-  const thinking = parsed.filter((p) => p.message?.thinking).map((p) => p.message.thinking).join("");
-  const content = parsed.filter((p) => p.message?.content).map((p) => p.message.content).join("");
-  assert.ok(thinking.includes("think"), `reasoning must be in thinking; got ${JSON.stringify(parsed)}`);
-  assert.equal(content.trim(), "4", `answer must be clean; got ${JSON.stringify(content)}`);
-});

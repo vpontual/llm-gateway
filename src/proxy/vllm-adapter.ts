@@ -567,12 +567,16 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
             thinkBuf += content;
             const ci = thinkBuf.indexOf("</think>");
             if (ci === -1) {
-              // Buffer the reasoning SILENTLY until </think> arrives (or the stream ends and
-              // flush() recovers it as content). Emitting it incrementally as `thinking` is
-              // unsafe for this model: on trivial prompts it reasons in prose and never closes
-              // </think>, so the whole reply — answer included — would vanish into thinking
-              // frames and the client shows nothing. Reasoning is hidden anyway, so not
-              // streaming it live is fine; the answer after </think> still streams.
+              // Hold back up to 7 chars in case "</think>" straddles two chunks.
+              const cut = Math.max(0, thinkBuf.length - 7);
+              const emit = thinkBuf.slice(0, cut);
+              thinkBuf = thinkBuf.slice(cut);
+              if (emit) {
+                this.push(
+                  JSON.stringify({ model: ctx.model, created_at: new Date().toISOString(), message: { role, thinking: emit }, done: false }) + "\n",
+                );
+                roleEmitted = true;
+              }
               continue;
             }
             const before = thinkBuf.slice(0, ci).replace(/^<think>\s*/, "");
@@ -602,16 +606,6 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
     },
 
     flush(callback: TransformCallback) {
-      // Recovery: if the model never emitted </think> (pure prose reasoning, no delimiter),
-      // we optimistically buffered the whole reply as `thinking` and never flushed it. Emit
-      // the buffer as CONTENT so the answer survives — degrades to inline reasoning (same as
-      // no-split), never an empty response. Without this, prose-reasoning turns show nothing.
-      if (reasoningPhase && thinkBuf.trim()) {
-        this.push(
-          JSON.stringify({ model: ctx.model, created_at: new Date().toISOString(), message: { role: "assistant", content: thinkBuf }, done: false }) + "\n",
-        );
-        thinkBuf = "";
-      }
       // If the upstream closed without sending [DONE], still emit a done frame
       // so the client gets a well-formed NDJSON stream.
       emitDone((b) => this.push(b));
