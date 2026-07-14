@@ -304,6 +304,30 @@ test("adapter: /v1/chat/completions response -> Ollama /api/chat shape", () => {
   assert.equal(out.eval_count, 3);
 });
 
+test("adapter: non-stream maps vLLM `reasoning` field to Ollama thinking", () => {
+  const ctx = makeCtx({ clientPath: "/api/chat" });
+  const buf = adaptResponseVllmToOllama(
+    Buffer.from(
+      JSON.stringify({
+        id: "chatcmpl-2",
+        model: "qwen3.6",
+        choices: [
+          {
+            // current vLLM (0.23.1+) uses `reasoning`, not `reasoning_content`
+            message: { role: "assistant", content: "The answer.", reasoning: "step one, step two" },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 5, completion_tokens: 4 },
+      }),
+    ),
+    ctx,
+  );
+  const out = parseJsonBuf(buf);
+  assert.equal(out.message.content, "The answer.");
+  assert.equal(out.message.thinking, "step one, step two");
+});
+
 test("adapter: chat response with tool_calls parses arguments back to object", () => {
   const ctx = makeCtx({ clientPath: "/api/chat" });
   const buf = adaptResponseVllmToOllama(
@@ -579,6 +603,23 @@ test("stream: wrapReasoning keeps reasoning hidden on the tool-call path", async
   const done = parsed[parsed.length - 1];
   assert.equal(done.done_reason, "tool_calls");
   assert.equal(done.message.tool_calls?.[0]?.function?.name, "read_file");
+});
+
+test("stream: maps vLLM `reasoning` field to Ollama thinking (parser-on path)", async () => {
+  // With --reasoning-parser on, vLLM emits reasoning in delta.reasoning (0.23.1+)
+  // and content is already clean. No wrapReasoning / </think>-split needed.
+  const ctx = makeCtx({ clientPath: "/api/chat", isStreaming: true });
+  const chunks = [
+    `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", reasoning: "let me think" } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { reasoning: " it through" } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { content: "the answer" } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+    `data: [DONE]\n\n`,
+  ];
+  const parsed = (await runStream(chunks, ctx)).map((l) => JSON.parse(l));
+  assert.equal(joinField(parsed, "thinking"), "let me think it through");
+  assert.equal(joinField(parsed, "content"), "the answer");
+  assert.equal(parsed[parsed.length - 1].done, true);
 });
 
 test("stream: wrapReasoning handles </think> split across chunks", async () => {

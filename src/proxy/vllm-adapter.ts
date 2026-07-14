@@ -315,9 +315,11 @@ export function adaptResponseVllmToOllama(buf: Buffer, ctx: VllmAdaptContext): B
       role: (message.role as string | undefined) ?? "assistant",
       content: chatContent,
     };
-    // vLLM reasoning-parser (qwen3) separates the trace into reasoning_content;
-    // prefer it. Fall back to inline-</think> splitting only when it's absent.
-    const reasoningContent = (message.reasoning_content as string | undefined) ?? "";
+    // vLLM's reasoning-parser separates the trace into a dedicated field:
+    // `reasoning` on current builds (0.23.1+), `reasoning_content` on older ones.
+    // Prefer it; fall back to inline-</think> splitting only when it's absent.
+    const reasoningContent =
+      (message.reasoning as string | undefined) ?? (message.reasoning_content as string | undefined) ?? "";
     if (reasoningContent.trim()) {
       ollamaMessage.thinking = reasoningContent.trim();
     } else if (ctx.wrapReasoning) {
@@ -568,10 +570,12 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
 
         const role = (delta.role as string | undefined) ?? "assistant";
 
-        // vLLM reasoning-parser (qwen3) separates the trace into reasoning_content.
-        // Emit it as Ollama `thinking`; once seen, `content` is the clean answer and
-        // needs no inline-</think> splitting.
-        const reasoning = (delta.reasoning_content as string | undefined) ?? "";
+        // vLLM's reasoning-parser separates the trace into a dedicated streaming
+        // field: `reasoning` on current builds (0.23.1+), `reasoning_content` on
+        // older ones. Emit it as Ollama `thinking`; once seen, `content` is the
+        // clean answer and needs no inline-</think> splitting.
+        const reasoning =
+          (delta.reasoning as string | undefined) ?? (delta.reasoning_content as string | undefined) ?? "";
         if (reasoning) {
           reasoningSeen = true;
           this.push(
