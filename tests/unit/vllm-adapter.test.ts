@@ -517,3 +517,77 @@ test("stream: skips unparseable SSE events and keeps going", async () => {
   assert.equal(parsed[0].response, "ok");
   assert.equal(parsed[parsed.length - 1].done, true);
 });
+
+// --- wrapReasoning: reasoning-hiding split (vcode / OWUI) ---
+
+// Helpers to collapse the streamed frames back into thinking + content text.
+function joinField(frames: any[], field: "thinking" | "content"): string {
+  return frames
+    .filter((f) => !f.done && f.message && typeof f.message[field] === "string")
+    .map((f) => f.message[field])
+    .join("");
+}
+
+test("stream: wrapReasoning splits </think> into thinking and content", async () => {
+  const ctx = makeCtx({ clientPath: "/api/chat", isStreaming: true, wrapReasoning: true });
+  // Model output has no leading <think> (template injects it into the prompt),
+  // reasons, then closes with </think> and answers.
+  const chunks = [
+    `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "reasoning here" } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { content: "</think>the answer" } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 4, completion_tokens: 6 } })}\n\n`,
+    `data: [DONE]\n\n`,
+  ];
+  const parsed = (await runStream(chunks, ctx)).map((l) => JSON.parse(l));
+  assert.equal(joinField(parsed, "thinking"), "reasoning here");
+  assert.equal(joinField(parsed, "content"), "the answer");
+  assert.equal(parsed[parsed.length - 1].done, true);
+});
+
+test("stream: wrapReasoning recovers the answer when </think> never arrives", async () => {
+  // Regression: prose reasoning with no closing tag must NOT vanish — the text
+  // has to surface as content so the client never shows an empty message.
+  const ctx = makeCtx({ clientPath: "/api/chat", isStreaming: true, wrapReasoning: true });
+  const prose = "Here's a thinking process: analyze the ask, then answer inline.";
+  const chunks = [
+    `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: prose } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 4, completion_tokens: 9 } })}\n\n`,
+    `data: [DONE]\n\n`,
+  ];
+  const parsed = (await runStream(chunks, ctx)).map((l) => JSON.parse(l));
+  const content = joinField(parsed, "content");
+  assert.ok(content.length > 0, "answer must be recovered as content, not lost");
+  // The full prose is preserved across thinking + content (nothing dropped).
+  assert.ok((joinField(parsed, "thinking") + content).includes("answer inline"));
+  assert.equal(parsed[parsed.length - 1].done, true);
+});
+
+test("stream: wrapReasoning keeps reasoning hidden on the tool-call path", async () => {
+  // Prose reasoning then a tool_call, no </think>. The tool call is the answer;
+  // the prose stays in `thinking` and must NOT be re-emitted as content.
+  const ctx = makeCtx({ clientPath: "/api/chat", isStreaming: true, wrapReasoning: true });
+  const chunks = [
+    `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "Thinking about which tool to call here." } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_0", type: "function", function: { name: "read_file", arguments: '{"path":"a.ts"}' } }] } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 8, completion_tokens: 5 } })}\n\n`,
+    `data: [DONE]\n\n`,
+  ];
+  const parsed = (await runStream(chunks, ctx)).map((l) => JSON.parse(l));
+  assert.equal(joinField(parsed, "content"), "", "prose reasoning must stay hidden, not become content");
+  const done = parsed[parsed.length - 1];
+  assert.equal(done.done_reason, "tool_calls");
+  assert.equal(done.message.tool_calls?.[0]?.function?.name, "read_file");
+});
+
+test("stream: wrapReasoning handles </think> split across chunks", async () => {
+  const ctx = makeCtx({ clientPath: "/api/chat", isStreaming: true, wrapReasoning: true });
+  const chunks = [
+    `data: ${JSON.stringify({ choices: [{ delta: { role: "assistant", content: "reason</thi" } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { content: "nk>answer" } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+    `data: [DONE]\n\n`,
+  ];
+  const parsed = (await runStream(chunks, ctx)).map((l) => JSON.parse(l));
+  assert.equal(joinField(parsed, "thinking"), "reason");
+  assert.equal(joinField(parsed, "content"), "answer");
+});

@@ -674,19 +674,27 @@ function shouldWrapOwuiReasoning(
   model: string | null,
 ): boolean {
   if (path !== "/api/chat") return false;
-  const hasSource = !!req.headers["x-ollama-source"];
+  const sourceHeader = req.headers["x-ollama-source"];
+  const source = (Array.isArray(sourceHeader) ? sourceHeader[0] : (sourceHeader ?? "")).toLowerCase();
+  const hasSource = !!sourceHeader;
   const hasKey = !!req.headers["x-ollama-api-key"];
   const m = (model ?? "").toLowerCase();
   const isReasoning = OWUI_REASONING_MODELS.some((k) => m.includes(k));
+  const thinkFalse = parsed?.think === false;
+  // vcode tags itself (x-ollama-source: vcode) and consumes the Ollama `thinking`
+  // field to collapse reasoning into a dropdown. Trust its self-tag — no subnet
+  // gate — and wrap whenever it's a reasoning model with thinking enabled.
+  if (source === "vcode") {
+    return isReasoning && !thinkFalse && !hasKey;
+  }
+  // OWUI hits /api/chat from the swarm subnet without a source tag. Same intent.
   // Note: this gate keeps its own lenient XFF read on purpose — it only decides
   // reasoning-wrap (no privilege), and OWUI may arrive via a hop that sets XFF.
   const fwd = req.headers["x-forwarded-for"];
   let ip = typeof fwd === "string" ? fwd.split(",")[0].trim() : (req.socket.remoteAddress ?? "");
   if (ip.startsWith("::ffff:")) ip = ip.slice(7);
   const subnet = ip.startsWith("10.0.154.");
-  const thinkFalse = parsed?.think === false;
-  const decision = !hasSource && !hasKey && isReasoning && subnet && !thinkFalse;
-  return decision;
+  return !hasSource && !hasKey && isReasoning && subnet && !thinkFalse;
 }
 
 /**

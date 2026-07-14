@@ -407,6 +407,10 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
   let roleEmitted = false;
   let reasoningPhase = ctx.wrapReasoning === true;
   let thinkBuf = "";
+  // Everything streamed as `thinking` while still in reasoningPhase. If the model
+  // never closes with </think> (prose/tool path), this text was actually the answer
+  // and must be recovered as content on flush so the client is never left empty.
+  let reasonedText = "";
   // True once vLLM's reasoning-parser has emitted reasoning_content on this
   // stream — means `content` is already the clean answer, so skip </think> splitting.
   let reasoningSeen = false;
@@ -418,6 +422,24 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
   const emitDone = (push: (frame: string) => void) => {
     if (doneEmitted) return;
     doneEmitted = true;
+    // Recover the answer when the model never emitted </think> (prose path): the
+    // text streamed as `thinking` was actually the response, so surface it as
+    // content BEFORE the done frame (a frame after done:true would be ignored by
+    // clients). Skip when a tool_call was produced — the tool call is the answer
+    // and the prose reasoning stays hidden in `thinking`.
+    if (ctx.clientPath === "/api/chat" && reasoningPhase && accumulatedToolCalls.size === 0) {
+      const recovered = (reasonedText + thinkBuf).replace(/^<think>\s*/, "").replace(/^\s+/, "");
+      if (recovered) {
+        push(
+          JSON.stringify({
+            model: ctx.model,
+            created_at: new Date().toISOString(),
+            message: { role: "assistant", content: recovered },
+            done: false,
+          }) + "\n",
+        );
+      }
+    }
     const totalDurationNs = Math.max(0, (Date.now() - ctx.startedAt) * 1_000_000);
     const toolCalls =
       accumulatedToolCalls.size > 0
@@ -572,6 +594,7 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
               const emit = thinkBuf.slice(0, cut);
               thinkBuf = thinkBuf.slice(cut);
               if (emit) {
+                reasonedText += emit;
                 this.push(
                   JSON.stringify({ model: ctx.model, created_at: new Date().toISOString(), message: { role, thinking: emit }, done: false }) + "\n",
                 );
@@ -607,7 +630,8 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
 
     flush(callback: TransformCallback) {
       // If the upstream closed without sending [DONE], still emit a done frame
-      // so the client gets a well-formed NDJSON stream.
+      // (which also handles prose-answer recovery) so the client gets a
+      // well-formed NDJSON stream.
       emitDone((b) => this.push(b));
       callback();
     },
