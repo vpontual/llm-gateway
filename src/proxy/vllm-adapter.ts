@@ -50,7 +50,12 @@ function mapOptionsToVllm(
   if (typeof options.top_p === "number") target.top_p = options.top_p;
   if (typeof options.top_k === "number") target.top_k = options.top_k;
   if (typeof options.min_p === "number") target.min_p = options.min_p;
-  if (typeof options.num_predict === "number") target.max_tokens = options.num_predict;
+  // Ollama spells "generate until you're done" as num_predict: -1 (its own default).
+  // vLLM rejects any max_tokens < 1 with a 400, so leave the field unset and let the
+  // target endpoint's default apply instead of forwarding a value that cannot work.
+  if (typeof options.num_predict === "number" && options.num_predict > 0) {
+    target.max_tokens = options.num_predict;
+  }
   if (typeof options.seed === "number") target.seed = options.seed;
   if (options.stop !== undefined) target.stop = options.stop;
   if (typeof options.repeat_penalty === "number") {
@@ -151,6 +156,21 @@ function applyOllamaFormat(parsed: Record<string, unknown>, target: Record<strin
   }
 }
 
+/**
+ * vLLM's /v1/completions defaults max_tokens to 16 — OpenAI's ancient default — and
+ * silently truncates the reply there, reporting finish_reason "length" and no error.
+ * Ollama's own default is unlimited, so every Ollama-native client that omits
+ * num_predict gets a 16-token fragment it has no reason to expect. Substituting a
+ * usable default is the only way this endpoint behaves the way its callers assume.
+ *
+ * 4096 rather than a backend's full context because this value has to be safe on
+ * every vLLM node (the smallest advertises max_model_len 16384) and vLLM 400s when
+ * max_tokens exceeds max_model_len. Callers needing more still say so explicitly.
+ * /v1/chat/completions needs no equivalent — its max_tokens already defaults to
+ * unbounded, so /api/chat is unaffected.
+ */
+const DEFAULT_COMPLETION_MAX_TOKENS = 4096;
+
 function adaptGenerate(parsed: Record<string, unknown>): AdaptedRequest {
   const body: Record<string, unknown> = {
     model: parsed.model,
@@ -161,6 +181,7 @@ function adaptGenerate(parsed: Record<string, unknown>): AdaptedRequest {
   mapOptionsToVllm(parsed.options as Record<string, unknown> | undefined, body);
   applyOllamaFormat(parsed, body);
   if (parsed.stream !== false) mergeStreamOptions(parsed, body);
+  if (typeof body.max_tokens !== "number") body.max_tokens = DEFAULT_COMPLETION_MAX_TOKENS;
   return { path: "/v1/completions", body: Buffer.from(JSON.stringify(body)) };
 }
 

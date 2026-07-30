@@ -73,6 +73,40 @@ test("adapter: /api/generate -> /v1/completions with option mapping", () => {
   assert.equal(body.stream_options, undefined);
 });
 
+test("adapter: /api/generate without num_predict gets a usable max_tokens, not vLLM's 16", () => {
+  const result = adaptRequestOllamaToVllm("/api/generate", buf({ model: "m", prompt: "hi" }));
+  assert.ok(result);
+  const body = parseJsonBuf(result.body);
+  assert.equal(body.max_tokens, 4096);
+});
+
+test("adapter: num_predict -1 (Ollama's unlimited) is dropped, not forwarded as a 400", () => {
+  const generate = adaptRequestOllamaToVllm(
+    "/api/generate",
+    buf({ model: "m", prompt: "hi", options: { num_predict: -1 } }),
+  );
+  assert.ok(generate);
+  // vLLM rejects max_tokens < 1, so the completions path falls back to the default.
+  assert.equal(parseJsonBuf(generate.body).max_tokens, 4096);
+
+  const chat = adaptRequestOllamaToVllm(
+    "/api/chat",
+    buf({ model: "m", messages: [{ role: "user", content: "hi" }], options: { num_predict: -1 } }),
+  );
+  assert.ok(chat);
+  // Chat completions already default to unbounded — leave the field off entirely.
+  assert.equal(parseJsonBuf(chat.body).max_tokens, undefined);
+});
+
+test("adapter: /api/chat is not given a max_tokens default", () => {
+  const result = adaptRequestOllamaToVllm(
+    "/api/chat",
+    buf({ model: "m", messages: [{ role: "user", content: "hi" }] }),
+  );
+  assert.ok(result);
+  assert.equal(parseJsonBuf(result.body).max_tokens, undefined);
+});
+
 test("adapter: /api/generate streaming adds stream_options.include_usage", () => {
   const result = adaptRequestOllamaToVllm(
     "/api/generate",
