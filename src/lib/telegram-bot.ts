@@ -5,6 +5,7 @@ import { servers, serverSnapshots, systemMetrics, serverEvents, userTelegramConf
 import { eq, desc, and, isNotNull } from "drizzle-orm";
 import { getTelegramConfig, isTelegramConfigured } from "./telegram";
 import { selectPullTarget } from "./pull-target";
+import { listenerTokenSet } from "./telegram-listeners";
 import { formatUptime, timeAgo } from "./format";
 
 interface TelegramUpdate {
@@ -379,11 +380,13 @@ async function syncUserBotListeners(): Promise<void> {
       .from(userTelegramConfigs)
       .innerJoin(users, eq(userTelegramConfigs.userId, users.id));
 
-    const currentTokens = new Set<string>();
+    const currentTokens = listenerTokenSet(
+      isTelegramConfigured() ? getTelegramConfig().botToken : null,
+      configs,
+    );
 
     for (const config of configs) {
       if (!config.isEnabled) continue;
-      currentTokens.add(config.botToken);
 
       // Skip if already listening on this token
       if (activeListeners.has(config.botToken)) continue;
