@@ -728,3 +728,102 @@ test("stream: wrapReasoning handles </think> split across chunks", async () => {
   assert.equal(joinField(parsed, "thinking"), "reason");
   assert.equal(joinField(parsed, "content"), "answer");
 });
+
+// --- swallowed-tool-call recovery (measured against the live DGX 2026-08-19) ---
+
+test("adapter: non-stream recovers a tool call the reasoning-parser swallowed", () => {
+  // The exact payload the DGX returns for think:false + tools, non-streaming: a well-formed
+  // <tool_call> block routed into `reasoning`, with tool_calls null. Before this fix the
+  // fold below delivered that XML as ordinary assistant content.
+  const ctx = makeCtx({ clientPath: "/api/chat", thinkDisabled: true });
+  const out = parseJsonBuf(
+    adaptResponseVllmToOllama(
+      buf({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "",
+              reasoning:
+                "<tool_call>\n<function=get_weather>\n<parameter=city>\nLisbon\n</parameter>\n</function>\n</tool_call>",
+            },
+            finish_reason: "stop",
+          },
+        ],
+      }),
+      ctx,
+    ),
+  );
+  assert.equal(out.message.tool_calls?.length, 1);
+  assert.equal(out.message.tool_calls[0].function.name, "get_weather");
+  assert.deepEqual(out.message.tool_calls[0].function.arguments, { city: "Lisbon" });
+  assert.equal(out.message.content, "", "raw XML must not leak into content");
+  assert.equal(out.message.thinking, undefined);
+  assert.equal(out.done_reason, "tool_calls");
+});
+
+test("adapter: recovery handles multiple swallowed calls and multiple parameters", () => {
+  const ctx = makeCtx({ clientPath: "/api/chat", thinkDisabled: true });
+  const out = parseJsonBuf(
+    adaptResponseVllmToOllama(
+      buf({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "",
+              reasoning:
+                "<tool_call>\n<function=run>\n<parameter=cmd>\nls -la\n</parameter>\n<parameter=host>\narchman\n</parameter>\n</function>\n</tool_call>\n" +
+                "<tool_call>\n<function=recall>\n<parameter=q>\nuptime\n</parameter>\n</function>\n</tool_call>",
+            },
+            finish_reason: "stop",
+          },
+        ],
+      }),
+      ctx,
+    ),
+  );
+  assert.equal(out.message.tool_calls?.length, 2);
+  assert.deepEqual(out.message.tool_calls[0].function.arguments, { cmd: "ls -la", host: "archman" });
+  assert.equal(out.message.tool_calls[1].function.name, "recall");
+});
+
+test("adapter: recovery does NOT fabricate a call from reasoning that merely discusses one", () => {
+  // Precision-first. A false positive here invents a tool invocation, which is far worse
+  // than missing one, so prose around the block must disqualify it.
+  const ctx = makeCtx({ clientPath: "/api/chat", thinkDisabled: true });
+  const reasoning =
+    "I could answer this by emitting <tool_call>\n<function=rm_rf>\n<parameter=path>\n/\n</parameter>\n</function>\n</tool_call> but I should not.";
+  const out = parseJsonBuf(
+    adaptResponseVllmToOllama(
+      buf({ choices: [{ message: { role: "assistant", content: "", reasoning }, finish_reason: "stop" }] }),
+      ctx,
+    ),
+  );
+  assert.equal(out.message.tool_calls, undefined, "must not invent a tool call from prose");
+  assert.equal(out.message.content, reasoning.trim(), "falls back to the existing #19222 fold");
+});
+
+test("adapter: recovery leaves a normally-parsed tool call untouched", () => {
+  const ctx = makeCtx({ clientPath: "/api/chat", thinkDisabled: true });
+  const out = parseJsonBuf(
+    adaptResponseVllmToOllama(
+      buf({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "",
+              reasoning: "<tool_call>\n<function=decoy>\n</function>\n</tool_call>",
+              tool_calls: [{ id: "c0", type: "function", function: { name: "real", arguments: "{}" } }],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }),
+      ctx,
+    ),
+  );
+  assert.equal(out.message.tool_calls.length, 1);
+  assert.equal(out.message.tool_calls[0].function.name, "real");
+});

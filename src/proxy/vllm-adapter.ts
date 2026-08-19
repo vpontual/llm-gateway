@@ -276,6 +276,41 @@ function parseToolCallArgs(raw: unknown): unknown {
   }
 }
 
+/**
+ * Recover a tool call that vLLM's reasoning-parser swallowed.
+ *
+ * With `--reasoning-parser deepseek_r1` and `enable_thinking=false`, the NON-streaming path
+ * routes the entire completion into `message.reasoning` — the `<tool_call>` block included —
+ * so vLLM's own tool parser never sees it and `message.tool_calls` comes back null. Without
+ * this, the fold below then delivers the raw XML as ordinary assistant content, which reads
+ * to a client as "the model chose to answer in XML" rather than a broken tool path.
+ * Measured 2026-08-19 against the live DGX; the streaming path is unaffected.
+ *
+ * PRECISION-FIRST, deliberately: this only fires when the reasoning field is ENTIRELY
+ * tool-call blocks. A model merely *discussing* a call inside its trace must never be turned
+ * into a real invocation — a false positive here FABRICATES a tool call, which is far worse
+ * than missing one.
+ */
+function extractXmlToolCalls(text: string): unknown[] | undefined {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("<tool_call>") || !trimmed.endsWith("</tool_call>")) return undefined;
+  const calls: unknown[] = [];
+  const blocks = trimmed.matchAll(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g);
+  for (const b of blocks) {
+    const fn = /<function=([^>\s]+)\s*>([\s\S]*?)<\/function>/.exec(b[1]);
+    if (!fn) return undefined;
+    const args: Record<string, string> = {};
+    for (const prm of fn[2].matchAll(/<parameter=([^>\s]+)\s*>\s*([\s\S]*?)\s*<\/parameter>/g)) {
+      args[prm[1]] = prm[2];
+    }
+    calls.push({ type: "function", function: { name: fn[1], arguments: JSON.stringify(args) } });
+  }
+  if (calls.length === 0) return undefined;
+  // Anything outside the blocks means this was prose, not a swallowed call.
+  if (trimmed.replace(/<tool_call>\s*[\s\S]*?\s*<\/tool_call>/g, "").trim().length > 0) return undefined;
+  return calls;
+}
+
 function openAiToolCallsToOllama(toolCalls: unknown): unknown[] | undefined {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return undefined;
   return toolCalls.map((tcRaw) => {
@@ -333,7 +368,7 @@ export function adaptResponseVllmToOllama(buf: Buffer, ctx: VllmAdaptContext): B
 
   if (ctx.clientPath === "/api/chat") {
     const message = (choice.message ?? {}) as Record<string, unknown>;
-    const toolCalls = openAiToolCallsToOllama(message.tool_calls);
+    let toolCalls = openAiToolCallsToOllama(message.tool_calls);
     const chatContent = (message.content as string | undefined) ?? "";
     const ollamaMessage: Record<string, unknown> = {
       role: (message.role as string | undefined) ?? "assistant",
@@ -344,7 +379,15 @@ export function adaptResponseVllmToOllama(buf: Buffer, ctx: VllmAdaptContext): B
     // Prefer it; fall back to inline-</think> splitting only when it's absent.
     const reasoningContent =
       (message.reasoning as string | undefined) ?? (message.reasoning_content as string | undefined) ?? "";
-    if (reasoningContent.trim()) {
+    const recoveredToolCalls =
+      !toolCalls && !chatContent.trim() && reasoningContent.trim()
+        ? extractXmlToolCalls(reasoningContent)
+        : undefined;
+    if (recoveredToolCalls) {
+      // The reasoning field WAS the tool call; there is no trace left to surface, and it
+      // must not be folded into content.
+      toolCalls = openAiToolCallsToOllama(recoveredToolCalls);
+    } else if (reasoningContent.trim()) {
       if (ctx.thinkDisabled && !chatContent.trim() && !toolCalls) {
         // vLLM #19222: with a reasoning-parser on and enable_thinking=false, the
         // non-streaming path misroutes the whole answer into the reasoning field,
