@@ -5,6 +5,7 @@ import {
   adaptRequestOllamaToVllm,
   adaptResponseVllmToOllama,
   createVllmToOllamaStreamTransform,
+  repairGemmaStringTokens,
   type VllmAdaptContext,
 } from "../../src/proxy/vllm-adapter";
 
@@ -826,4 +827,46 @@ test("adapter: recovery leaves a normally-parsed tool call untouched", () => {
   );
   assert.equal(out.message.tool_calls.length, 1);
   assert.equal(out.message.tool_calls[0].function.name, "real");
+});
+
+// gemma4 streaming tool args (captured 2026-09-28 from gemma4:26b-a4b on the AGX).
+const GEMMA_TODOS = "{\"todos\": [{\"content\": \"<|\\add sub.js<|\\\"|\", \"status\": \"<|\\\"in_progress<|\\\"}, {\"content\": \"<|\\add cli.js<|\\\"|\", \"status\": \"<|\\pending<|\\\"}, {\"content\": \"<|\\write tests<|\\\"|\", \"status\": \"<|\\pending<|\\\"}]}";
+const GEMMA_EDITS = "{\"edits\": [{\"new\": \"<|\\\"|a + b<|\\\"|\", \"old\": \"<|\\\"|a - b<|\\\"}, {\"new\": \"<|\\\"|\\\"Hello, \\\\\\\"world\\\\\\\"\\\"<|\\\"|\"\", \"old\": \"<|\\Helo<|\\\"}], \"path\": \"src/a.js\"}";
+
+test("gemma4 streamed tool args are not JSON as vLLM emits them", () => {
+  assert.throws(() => JSON.parse(GEMMA_TODOS));
+  assert.throws(() => JSON.parse(GEMMA_EDITS));
+});
+
+test("repairGemmaStringTokens recovers the intended nested arguments", () => {
+  assert.deepEqual(JSON.parse(repairGemmaStringTokens(GEMMA_TODOS)), { todos: [
+    { content: "add sub.js", status: "in_progress" },
+    { content: "add cli.js", status: "pending" },
+    { content: "write tests", status: "pending" },
+  ] });
+  const e = JSON.parse(repairGemmaStringTokens(GEMMA_EDITS));
+  assert.equal(e.path, "src/a.js");
+  assert.deepEqual(e.edits[0], { new: "a + b", old: "a - b" });
+  assert.equal(e.edits[1].old, "Helo");
+});
+
+test("repairGemmaStringTokens leaves ordinary JSON unchanged", () => {
+  const plain = '{"path": "src/<|x|>.js", "n": 1}';
+  assert.equal(repairGemmaStringTokens(plain), plain);
+});
+
+test("stream: gemma4 tool args split across chunks are repaired, not replaced with {}", async () => {
+  const third = Math.ceil(GEMMA_TODOS.length / 3);
+  const parts = [GEMMA_TODOS.slice(0, third), GEMMA_TODOS.slice(third, 2 * third), GEMMA_TODOS.slice(2 * third)];
+  const frames = [
+    ...parts.map((p, i) => "data: " + JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, ...(i === 0 ? { id: "c0", type: "function" } : {}), function: { ...(i === 0 ? { name: "todo_write" } : {}), arguments: p } }] } }] }) + "\n\n"),
+    "data: " + JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }) + "\n\n",
+    "data: [DONE]\n\n",
+  ];
+  const out = await runStream(frames, makeCtx({ clientPath: "/api/chat", isStreaming: true, model: "gemma4:26b-a4b" }));
+  const done = out.map((l) => JSON.parse(l)).find((f) => f.message?.tool_calls);
+  assert.ok(done, "a frame with tool_calls");
+  assert.equal(done.message.tool_calls[0].function.name, "todo_write");
+  assert.equal(done.message.tool_calls[0].function.arguments.todos.length, 3);
+  assert.equal(done.message.tool_calls[0].function.arguments.todos[0].status, "in_progress");
 });

@@ -267,10 +267,40 @@ export function adaptRequestOllamaToVllm(
 
 // --- Response translation (OpenAI /v1 -> Ollama-native) ---
 
+/**
+ * Gemma 4 delimits strings in its tool calls with a special token, `<|"|>`.
+ * vLLM's gemma tool parser strips it correctly when NOT streaming, but in
+ * STREAMING mode it leaves fragments of it around every string value, e.g.
+ *   {"todos": [{"content": "<|\add sub.js<|\"|", "status": "<|\"in_progress<|\"}]}
+ * which is not JSON, so every nested/array argument parsed to {} — a client
+ * saw todo_write({}) and looped. Seen 2026-09-28 on gemma4:26b-a4b (AGX).
+ *
+ * Remove the fragments from each string value: an opening `"<|\` with an
+ * optional `"` and `|`, and a closing `<|\"` with an optional `|` and stray
+ * quotes. Only used after a plain JSON.parse has failed, so arguments that
+ * parse today cannot change.
+ */
+export function repairGemmaStringTokens(raw: string): string {
+  return raw.replace(/"<\|\\(?:"\|?)?([\s\S]*?)<\|\\"\|?"*(?=\s*[,}\]])/g, (_m, inner: string) => `"${inner}"`);
+}
+
+function parseArgsOrRepair(raw: string): unknown {
+  try {
+    return JSON.parse(raw || "{}");
+  } catch (err) {
+    if (raw.includes("<|\\")) {
+      try {
+        return JSON.parse(repairGemmaStringTokens(raw));
+      } catch { /* fall through */ }
+    }
+    throw err;
+  }
+}
+
 function parseToolCallArgs(raw: unknown): unknown {
   if (typeof raw !== "string") return raw ?? {};
   try {
-    return JSON.parse(raw);
+    return parseArgsOrRepair(raw);
   } catch {
     return {};
   }
@@ -526,7 +556,7 @@ export function createVllmToOllamaStreamTransform(ctx: VllmAdaptContext): Transf
               arguments: (() => {
                 const raw = t.args || "";
                 try {
-                  return JSON.parse(raw || "{}");
+                  return parseArgsOrRepair(raw);
                 } catch (parseErr) {
                   // vLLM tool-call parsers (e.g. qwen3_xml) occasionally emit
                   // malformed JSON for tool arguments (model interleaves reasoning
