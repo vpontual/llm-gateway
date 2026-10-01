@@ -1,5 +1,7 @@
 // Fleet metrics agent client -- fetches system metrics from servers
 
+import { normalizeTemperatures } from "./alert-rules";
+
 const TIMEOUT_MS = 3000;
 
 export interface RebootCause {
@@ -43,7 +45,9 @@ export async function fetchSystemMetrics(
     });
     clearTimeout(timeout);
     if (!res.ok) return null;
-    return await res.json();
+    const data = (await res.json()) as MetricsAgentResponse;
+    data.temperatures = normalizeTemperatures(data.temperatures);
+    return data;
   } catch {
     return null;
   }

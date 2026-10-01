@@ -16,6 +16,43 @@ export const MEM_AVAILABLE_OVERRIDES: Record<string, number> = {
   "Jetson Nano 2": 0.02,
 };
 
+// The DGX Spark's only thermal zone is "acpitz", the SoC package that holds both the
+// CPU and the GPU. Long-prompt prefill drives it to ~94C within 45 s at ~90 W and it
+// falls back below 65C seconds later (measured 2026-10-01); the kernel's critical trip
+// point is 104C. 85C would alert on every long prompt, so it gets its own threshold.
+export const CPU_TEMP_OVERRIDES: Record<string, number> = {
+  "DGX Spark": 98,
+};
+
+// Agents name sensors after the kernel's thermal zones. Jetson/Orin zones are literally
+// "cpu" and "gpu"; the DGX Spark reports only "acpitz" (and its GPU, when an agent adds
+// it, as "gpu0"). Everything downstream reads temperatures.cpu / .gpu, so without this the
+// DGX stored NULL temperatures for months and its overheating alert could never fire.
+// A host that already reports "cpu" / "gpu" is left exactly as it was.
+const CPU_SENSOR = /^(cpu|acpitz|tj|x86_pkg_temp|coretemp|k10temp|soc\d*)$/i;
+const GPU_SENSOR = /^gpu\d*$/i;
+
+export function normalizeTemperatures(
+  temps: Record<string, number> | null | undefined
+): Record<string, number> {
+  const out: Record<string, number> = { ...(temps ?? {}) };
+  const hottest = (re: RegExp): number | undefined => {
+    const vals = Object.entries(out)
+      .filter(([k, v]) => re.test(k) && Number.isFinite(v))
+      .map(([, v]) => v);
+    return vals.length ? Math.max(...vals) : undefined;
+  };
+  if (out.cpu == null) {
+    const cpu = hottest(CPU_SENSOR);
+    if (cpu !== undefined) out.cpu = cpu;
+  }
+  if (out.gpu == null) {
+    const gpu = hottest(GPU_SENSOR);
+    if (gpu !== undefined) out.gpu = gpu;
+  }
+  return out;
+}
+
 export interface AlertCondition {
   alertType: string;
   message: string;
@@ -49,10 +86,11 @@ export function evaluateMetrics(
 
   // CPU overheating
   const cpuTemp = metrics.temperatures.cpu;
-  if (cpuTemp != null && cpuTemp >= THRESHOLDS.CPU_TEMP) {
+  const cpuLimit = CPU_TEMP_OVERRIDES[serverName] ?? THRESHOLDS.CPU_TEMP;
+  if (cpuTemp != null && cpuTemp >= cpuLimit) {
     alerts.push({
       alertType: "cpu_temp",
-      message: `${serverName} CPU ${Math.round(cpuTemp)}C (threshold: ${THRESHOLDS.CPU_TEMP}C)`,
+      message: `${serverName} CPU ${Math.round(cpuTemp)}C (threshold: ${cpuLimit}C)`,
     });
   }
 

@@ -235,3 +235,45 @@ test("THRESHOLDS are exported with expected values", () => {
   assert.equal(THRESHOLDS.DISK_USAGE, 0.9);
   assert.equal(THRESHOLDS.MEM_AVAILABLE, 0.1);
 });
+
+// --- normalizeTemperatures (2026-10-01: the DGX reported only "acpitz", stored NULL) ---
+
+import { normalizeTemperatures, CPU_TEMP_OVERRIDES } from "../../src/lib/alert-rules";
+
+test("normalizeTemperatures maps the DGX's acpitz onto cpu", () => {
+  const t = normalizeTemperatures({ acpitz: 94.2 });
+  assert.equal(t.cpu, 94.2);
+  assert.equal(t.gpu, undefined);
+  assert.equal(t.acpitz, 94.2, "original keys are kept");
+});
+
+test("normalizeTemperatures leaves a Jetson's own cpu/gpu untouched", () => {
+  const jetson = { cpu: 63.3, gpu: 60.1, soc0: 59.6, tj: 65.0 };
+  const t = normalizeTemperatures(jetson);
+  assert.equal(t.cpu, 63.3, "an explicit cpu reading wins over hotter soc/tj zones");
+  assert.equal(t.gpu, 60.1);
+});
+
+test("normalizeTemperatures takes the hottest matching zone and gpuN for gpu", () => {
+  const t = normalizeTemperatures({ acpitz: 71, x86_pkg_temp: 80, gpu0: 66, gpu1: 70, nvme: 99 });
+  assert.equal(t.cpu, 80);
+  assert.equal(t.gpu, 70);
+});
+
+test("normalizeTemperatures tolerates missing or junk input", () => {
+  assert.deepEqual(normalizeTemperatures(undefined), {});
+  assert.deepEqual(normalizeTemperatures(null), {});
+  const t = normalizeTemperatures({ acpitz: Number.NaN, wifi: 40 });
+  assert.equal(t.cpu, undefined);
+});
+
+test("DGX Spark CPU alert fires at its own threshold, not 85C", () => {
+  assert.equal(CPU_TEMP_OVERRIDES["DGX Spark"], 98);
+  const at94 = evaluateMetrics("DGX Spark", makeMetrics({ cpu: 94 }));
+  assert.equal(at94.filter((a) => a.alertType === "cpu_temp").length, 0, "94C long-prompt bursts are normal");
+  const at99 = evaluateMetrics("DGX Spark", makeMetrics({ cpu: 99 }));
+  assert.equal(at99.filter((a) => a.alertType === "cpu_temp").length, 1);
+  assert.match(at99[0].message, /threshold: 98C/);
+  const jetson = evaluateMetrics("Jetson Orin NX 1", makeMetrics({ cpu: 86 }));
+  assert.equal(jetson.filter((a) => a.alertType === "cpu_temp").length, 1, "other hosts keep 85C");
+});
